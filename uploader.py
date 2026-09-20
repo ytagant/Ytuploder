@@ -36,17 +36,15 @@ def delete_from_drive(file_id):
     drive_service.files().delete(fileId=file_id).execute()
 
 def edit_anti_copyright_full_video(input_video, output_video):
-    print("🎬 FULL VIDEO PROCESSING: پوری ویڈیو پر اینٹی کاپی رائট ایڈیٹنگ اور ہر چند سیکنڈ بعد بلیک کٹ ٹرانزिशन لگایا جا رہا ہے...")
+    print("🎬 FULL VIDEO PROCESSING: پوری ویڈیو پر اینٹی کاپی رائٹ ایڈیٹنگ اور بلیک کٹ ٹرانزिशन لگایا جا رہا ہے...")
     
-    # یہاں پر ویڈیو فلٹر میں hflip, کلر ایڈجسٹمنٹ کے ساتھ ساتھ
-    # 'mpdecimate' یا کسٹم ایکسپریشن کے ذریعے ہر چند سیکنڈ بعد 0.01 سیکنڈ کا بلیک کٹ ٹرانزिशन شامل کیا گیا ہے
+    # یہاں expr کی جگہ درست drawbox سینٹیکس استعمال کیا گیا ہے جو بلैक फ्लैश کٹ لگائے گا
     video_filter = (
         "hflip,"
         "eq=brightness=0.02:contrast=1.05:saturation=1.1,"
         "setpts=PTS/1.03,"
         "fade=t=in:st=0:d=0.1,"
-        # ہر 10 سیکنڈ کے بعد 0.01 سیکنڈ کا بلیک فلیش/کٹ ٹرانزिशन
-        "expr=if(lt(mod(t,10),0.01),0,val)"
+        "drawbox=enable='lt(mod(t,10),0.01)':x=0:y=0:w=iw:h=ih:color=black:t=fill"
     )
 
     cmd = [
@@ -70,7 +68,7 @@ def get_file_id_by_name(filename):
     return None
 
 def get_youtube_service():
-    print("🔑 Google Drive سے client_secret.json और token.json ڈاؤن لوڈ ہو رہے हैं...")
+    print("🔑 Google Drive سے client_secret.json اور token.json ڈاؤن لوڈ ہو رہے हैं...")
     
     cs_id = get_file_id_by_name('client_secret.json')
     tk_id = get_file_id_by_name('token.json')
@@ -134,16 +132,11 @@ def main():
         print(f"❌ Video file {item['filename']} Drive پر نہیں ملی۔")
         return
 
-    # 1. Drive سے پوری ویڈیو ڈاؤن لوڈ کریں
     download_from_drive(video_id, 'raw_video.mp4')
-    
-    # 2. پوری ویڈیو کی اینٹی کاپی رائٹ اور ٹرانزिशन ایڈیٹنگ کریں
     edit_anti_copyright_full_video('raw_video.mp4', 'edited_video.mp4')
 
-    # 3. Drive کی فائلوں سے YouTube کنکشن بنائیں
     youtube = get_youtube_service()
 
-    # 4. پوری ایڈیٹ شدہ ویڈیو اپ لوڈ کریں
     body = {
         'snippet': {
             'title': item['title'],
