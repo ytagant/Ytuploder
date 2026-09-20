@@ -2,145 +2,94 @@ import os
 import json
 import subprocess
 from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-DRIVE_FOLDER_ID = os.environ.get('DRIVE_FOLDER_ID')
-SERVICE_ACCOUNT_JSON = os.environ.get('SERVICE_ACCOUNT_JSON')
-
-# 1. Drive Connection Setup
-with open('service_account.json', 'w') as f:
-    f.write(SERVICE_ACCOUNT_JSON)
-
-creds_drive = service_account.Credentials.from_service_account_file(
-    'service_account.json', scopes=['https://www.googleapis.com/auth/drive']
-)
-drive_service = build('drive', 'v3', credentials=creds_drive)
-
-def download_from_drive(file_id, output_path):
-    print(f"📥 Downloading file {output_path} from Drive...")
-    try:
-        # Normal media / json download
-        request = drive_service.files().get_media(fileId=file_id)
-        with open(output_path, 'wb') as f:
-            f.write(request.execute())
-    except Exception as e:
-        # Fallback if Drive converted file into Google Doc / Text
-        print(f"⚠️ Standard download failed, trying export for {output_path}...")
-        request = drive_service.files().export_media(fileId=file_id, mimeType='text/plain')
-        with open(output_path, 'wb') as f:
-            f.write(request.execute())
-    print("✅ Download Complete!")
-
-def delete_from_drive(file_id):
-    drive_service.files().delete(fileId=file_id).execute()
-
-def edit_anti_copyright_fast_test(input_video, output_video):
-    print("🎬 FAST TEST: بڑی ویڈیو میں سے صرف پہلے 2 منٹ (120s) کٹ اور ایڈٹ ہو رہے ہیں...")
-    cmd = [
-        'ffmpeg', '-y',
-        '-ss', '00:00:00',
-        '-t', '120',  # Fast Test: Cut first 2 minutes only
-        '-i', input_video,
-        '-vf', "hflip,eq=brightness=0.02:contrast=1.05:saturation=1.1,setpts=PTS/1.03",
-        '-af', "atempo=1.03,asetrate=44100*1.02,aresample=44100",
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
-        '-c:a', 'aac', '-b:a', '128k',
-        output_video
+def process_video_with_pro_editing(input_file, output_file):
+    """
+    FFmpeg Professional Editing Filter:
+    1. Invisible Black Cut (0.1s Fade-In / Fade-Out transition)
+    2. Horizontal Flip (hflip for copyright safety)
+    3. Light Color Grading (Brightness, Contrast, Saturation)
+    4. Audio Loudness Normalization (-14 LUFS)
+    """
+    print(f"🎬 Starting Professional Video Processing on: {input_file}")
+    
+    # Get video duration using ffprobe
+    duration_cmd = [
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", input_file
     ]
-    subprocess.run(cmd, check=True)
-    print("✨ 2-Minute Fast Test Video Editing Complete!")
+    try:
+        duration = float(subprocess.check_output(duration_cmd).decode('utf-8').strip())
+        fade_out_start = max(0, duration - 0.1)
+    except Exception as e:
+        print(f"⚠️ Warning: Could not detect video duration ({e}). Using fallback settings.")
+        fade_out_start = 119.9
 
-def get_file_id_by_name(filename):
-    query = f"name = '{filename}' and '{DRIVE_FOLDER_ID}' in parents and trashed = false"
-    results = drive_service.files().list(q=query, fields="files(id)").execute()
-    files = results.get('files', [])
-    if files:
-        return files[0]['id']
-    return None
+    ffmpeg_cmd = [
+        "ffmpeg", "-y",
+        "-i", input_file,
+        "-vf", (
+            f"hflip,"
+            f"eq=brightness=0.02:contrast=1.05:saturation=1.1,"
+            f"fade=t=in:st=0:d=0.1,"
+            f"fade=t=out:st={fade_out_start:.2f}:d=0.1"
+        ),
+        "-af", "volume=1.2,loudnorm=I=-14:LRA=11:TP=-1.5",
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "22",
+        "-c:a", "aac",
+        output_file
+    ]
+
+    result = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        print(f"❌ FFmpeg Error: {result.stderr.decode('utf-8')}")
+        raise RuntimeError("Video processing failed.")
+    
+    print("✨ Video Editing Completed Successfully!")
+
+def delete_from_drive(drive_service, file_id):
+    """Safe deletion from Google Drive with error handling"""
+    try:
+        drive_service.files().delete(fileId=file_id).execute()
+        print(f"🗑️ Drive file {file_id} deleted successfully.")
+    except Exception as e:
+        print(f"⚠️ Warning: Could not delete file {file_id} from Drive: {e}")
 
 def get_youtube_service():
-    print("🔑 Google Drive سے client_secret.json اور token.json ڈاؤن لوڈ ہو رہے ہیں...")
-    
-    cs_id = get_file_id_by_name('client_secret.json')
-    tk_id = get_file_id_by_name('token.json')
-    
-    if not cs_id or not tk_id:
-        raise Exception("❌ Google Drive میں client_secret.json یا token.json نہیں ملی!")
-
-    download_from_drive(cs_id, 'client_secret.json')
-    download_from_drive(tk_id, 'token.json')
-
-    with open('client_secret.json', 'r') as f:
-        client_secret_data = json.load(f)
+    if not os.path.exists('token.json'):
+        raise FileNotFoundError("token.json file missing!")
     
     with open('token.json', 'r') as f:
         token_data = json.load(f)
-
-    client_info = client_secret_data.get('web') or client_secret_data.get('installed')
-
-    creds_yt = Credentials(
-        token=token_data.get('token'),
-        refresh_token=token_data.get('refresh_token'),
-        token_uri=client_info['token_uri'],
-        client_id=client_info['client_id'],
-        client_secret=client_info['client_secret'],
-        scopes=token_data.get('scopes')
-    )
-    creds_yt.refresh(Request())
-    print("✅ YouTube API Successfully Connected!")
-    return build('youtube', 'v3', credentials=creds_yt)
-
-def upload_thumbnail(youtube, video_id, thumbnail_filename):
-    t_id = get_file_id_by_name(thumbnail_filename)
-    if t_id:
-        download_from_drive(t_id, 'thumb.jpg')
-        youtube.thumbnails().set(videoId=video_id, media_body=MediaFileUpload('thumb.jpg')).execute()
-        delete_from_drive(t_id)
-        print("🖼️ Custom Thumbnail Uploaded Successfully!")
+    
+    creds = Credentials.from_authorized_user_info(token_data)
+    return build('youtube', 'v3', credentials=creds)
 
 def main():
-    queue_file_id = get_file_id_by_name('queue.json')
+    raw_video = "raw_video.mp4"
+    processed_video = "processed_full_video.mp4"
 
-    if not queue_file_id:
-        print("ℹ️ Google Drive میں queue.json نہیں ملی۔")
+    # Step 1: Process and Edit Video
+    if os.path.exists(raw_video):
+        process_video_with_pro_editing(raw_video, processed_video)
+    elif not os.path.exists(processed_video):
+        print(f"❌ Error: Neither {raw_video} nor {processed_video} found.")
         return
 
-    download_from_drive(queue_file_id, 'queue.json')
-
-    with open('queue.json', 'r') as f:
-        queue = json.load(f)
-
-    if not queue:
-        print("ℹ️ Queue خالی ہے۔")
-        return
-
-    item = queue.pop(0)
-    print(f"🚀 Processing: {item['title']}")
-
-    video_id = get_file_id_by_name(item['filename'])
-
-    if not video_id:
-        print(f"❌ Video file {item['filename']} Drive پر نہیں ملی۔")
-        return
-
-    # 1. Drive سے ویڈیو ڈاؤن لوڈ کریں
-    download_from_drive(video_id, 'raw_video.mp4')
-    
-    # 2. صرف پہلے 2 منٹ کی فاسٹ ایڈٹنگ کریں
-    edit_anti_copyright_fast_test('raw_video.mp4', 'edited_video.mp4')
-
-    # 3. Drive کی فائلوں سے YouTube کنکشن بنائیں
+    # Step 2: YouTube API Authentication
     youtube = get_youtube_service()
+    print("✅ YouTube API Successfully Connected!")
 
-    # 4. 2 منٹ کی ویڈیو اپ لوڈ کریں
+    # Step 3: Metadata and Upload
     body = {
         'snippet': {
-            'title': item['title'],
-            'description': item['description'],
-            'tags': item.get('tags', []),
+            'title': 'Manhwa Recap Video',
+            'description': 'Automated Manhwa/Anime recap video upload.',
+            'tags': ['anime', 'manhwa', 'recap'],
             'categoryId': '24'
         },
         'status': {
@@ -149,23 +98,21 @@ def main():
         }
     }
 
-    media = MediaFileUpload('edited_video.mp4', chunksize=-1, resumable=True)
-    request = youtube.videos().insert(part=','.join(body.keys()), body=body, media_body=media)
-    response = request.execute()
-    yt_video_id = response['id']
+    media = MediaFileUpload(processed_video, chunksize=-1, resumable=True)
+    
+    request = youtube.videos().insert(
+        part=','.join(body.keys()),
+        body=body,
+        media_body=media
+    )
+    
+    response = None
+    while response is None:
+        status, response = request.next_chunk()
+        if status:
+            print(f"🚀 Uploading progress: {int(status.progress() * 100)}%")
 
-    print(f"🎉 2-Min Test Video YouTube پر کامیابی سے اپ لوڈ ہو گئی! Video ID: {yt_video_id}")
-
-    if 'thumbnail' in item:
-        upload_thumbnail(youtube, yt_video_id, item['thumbnail'])
-
-    delete_from_drive(video_id)
-
-    with open('queue.json', 'w') as f:
-        json.dump(queue, f, indent=4)
-
-    drive_service.files().update(fileId=queue_file_id, media_body=MediaFileUpload('queue.json')).execute()
-    print("✅ Drive سے ویڈیو ڈیلیٹ اور queue.json اپ ڈیٹ ہو گئی۔")
+    print(f"🎉 Video Uploaded Successfully! Video ID: {response['id']}")
 
 if __name__ == '__main__':
     main()
