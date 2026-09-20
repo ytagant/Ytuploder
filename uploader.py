@@ -12,7 +12,7 @@ SERVICE_ACCOUNT_JSON = os.environ.get('SERVICE_ACCOUNT_JSON')
 YOUTUBE_CLIENT_SECRET_JSON = os.environ.get('YOUTUBE_CLIENT_SECRET_JSON')
 YOUTUBE_TOKEN_JSON = os.environ.get('YOUTUBE_TOKEN_JSON')
 
-# 1. Drive Connection
+# 1. Drive Connection Setup
 with open('service_account.json', 'w') as f:
     f.write(SERVICE_ACCOUNT_JSON)
 
@@ -21,36 +21,22 @@ creds_drive = service_account.Credentials.from_service_account_file(
 )
 drive_service = build('drive', 'v3', credentials=creds_drive)
 
-# 2. YouTube Auto-Refreshing Connection
-token_data = json.loads(YOUTUBE_TOKEN_JSON)
-
-creds_yt = Credentials(
-    token=None,
-    refresh_token=token_data['refresh_token'],
-    token_uri=token_data['token_uri'],
-    client_id=token_data['client_id'],
-    client_secret=token_data['client_secret'],
-    scopes=token_data['scopes']
-)
-
-# Force Refresh Token to get fresh access token instantly
-creds_yt.refresh(Request())
-youtube = build('youtube', 'v3', credentials=creds_yt)
-
 def download_from_drive(file_id, output_path):
+    print(f"📥 Downloading file from Drive...")
     request = drive_service.files().get_media(fileId=file_id)
     with open(output_path, 'wb') as f:
         f.write(request.execute())
+    print("✅ Download Complete!")
 
 def delete_from_drive(file_id):
     drive_service.files().delete(fileId=file_id).execute()
 
 def edit_anti_copyright_fast_test(input_video, output_video):
-    print("🎬 FAST TEST: صرف پہلے 2 منٹ (120s) کٹ اور ایڈٹ ہو رہے ہیں...")
+    print("🎬 FAST TEST: بڑی ویڈیو میں سے صرف پہلے 2 منٹ (120s) کٹ اور ایڈٹ ہو رہے ہیں...")
     cmd = [
         'ffmpeg', '-y',
         '-ss', '00:00:00',
-        '-t', '120',
+        '-t', '120',  # Fast Test: Cut first 2 minutes only
         '-i', input_video,
         '-vf', "hflip,eq=brightness=0.02:contrast=1.05:saturation=1.1,setpts=PTS/1.03",
         '-af', "atempo=1.03,asetrate=44100*1.02,aresample=44100",
@@ -61,7 +47,7 @@ def edit_anti_copyright_fast_test(input_video, output_video):
     subprocess.run(cmd, check=True)
     print("✨ 2-Minute Fast Test Video Editing Complete!")
 
-def upload_thumbnail(video_id, thumbnail_filename):
+def upload_thumbnail(youtube, video_id, thumbnail_filename):
     t_query = f"name = '{thumbnail_filename}' and '{DRIVE_FOLDER_ID}' in parents and trashed = false"
     t_results = drive_service.files().list(q=t_query, fields="files(id)").execute()
     t_files = t_results.get('files', [])
@@ -72,6 +58,20 @@ def upload_thumbnail(video_id, thumbnail_filename):
         youtube.thumbnails().set(videoId=video_id, media_body=MediaFileUpload('thumb.jpg')).execute()
         delete_from_drive(t_id)
         print("🖼️ Custom Thumbnail Uploaded Successfully!")
+
+def get_youtube_service():
+    print("🔑 Connecting to YouTube API...")
+    token_data = json.loads(YOUTUBE_TOKEN_JSON)
+    creds_yt = Credentials(
+        token=None,
+        refresh_token=token_data['refresh_token'],
+        token_uri=token_data['token_uri'],
+        client_id=token_data['client_id'],
+        client_secret=token_data['client_secret'],
+        scopes=token_data['scopes']
+    )
+    creds_yt.refresh(Request())
+    return build('youtube', 'v3', credentials=creds_yt)
 
 def main():
     query = f"name = 'queue.json' and '{DRIVE_FOLDER_ID}' in parents and trashed = false"
@@ -104,9 +104,17 @@ def main():
         return
 
     video_id = v_files[0]['id']
+    
+    # 1. Drive سے ویڈیو ڈاؤن لوڈ کریں
     download_from_drive(video_id, 'raw_video.mp4')
+    
+    # 2. صرف پہلے 2 منٹ کی فاسٹ ایڈٹنگ کریں
     edit_anti_copyright_fast_test('raw_video.mp4', 'edited_video.mp4')
 
+    # 3. یوٹیوب کنکشن بنائیں
+    youtube = get_youtube_service()
+
+    # 4. 2 منٹ کی ویڈیو اپ لوڈ کریں
     body = {
         'snippet': {
             'title': item['title'],
@@ -128,7 +136,7 @@ def main():
     print(f"🎉 2-Min Test Video YouTube پر کامیابی سے اپ لوڈ ہو گئی! Video ID: {yt_video_id}")
 
     if 'thumbnail' in item:
-        upload_thumbnail(yt_video_id, item['thumbnail'])
+        upload_thumbnail(youtube, yt_video_id, item['thumbnail'])
 
     delete_from_drive(video_id)
 
@@ -140,4 +148,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-                                 
+    
