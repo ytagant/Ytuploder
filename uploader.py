@@ -1,21 +1,14 @@
 import os
 import json
+import glob
 import subprocess
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 def process_video_with_pro_editing(input_file, output_file):
-    """
-    FFmpeg Professional Editing Filter:
-    1. Invisible Black Cut (0.1s Fade-In / Fade-Out transition)
-    2. Horizontal Flip (hflip for copyright safety)
-    3. Light Color Grading (Brightness, Contrast, Saturation)
-    4. Audio Loudness Normalization (-14 LUFS)
-    """
     print(f"🎬 Starting Professional Video Processing on: {input_file}")
     
-    # Get video duration using ffprobe
     duration_cmd = [
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1", input_file
@@ -51,14 +44,6 @@ def process_video_with_pro_editing(input_file, output_file):
     
     print("✨ Video Editing Completed Successfully!")
 
-def delete_from_drive(drive_service, file_id):
-    """Safe deletion from Google Drive with error handling"""
-    try:
-        drive_service.files().delete(fileId=file_id).execute()
-        print(f"🗑️ Drive file {file_id} deleted successfully.")
-    except Exception as e:
-        print(f"⚠️ Warning: Could not delete file {file_id} from Drive: {e}")
-
 def get_youtube_service():
     if not os.path.exists('token.json'):
         raise FileNotFoundError("token.json file missing!")
@@ -69,27 +54,83 @@ def get_youtube_service():
     creds = Credentials.from_authorized_user_info(token_data)
     return build('youtube', 'v3', credentials=creds)
 
+def find_thumbnail(base_name):
+    """ویدیو کے سیم نام کی تھمب نیل فائل ڈھونڈنا"""
+    for ext in ['.jpg', '.png', '.jpeg', '.webp']:
+        thumb_path = base_name + ext
+        if os.path.exists(thumb_path):
+            return thumb_path
+    # اگر خاص نام نہ ملے تو کوئی بھی جنرل تھمب نیل دیکھنا
+    for fallback in ['thumbnail.jpg', 'thumbnail.png', 'cover.jpg']:
+        if os.path.exists(fallback):
+            return fallback
+    return None
+
+def load_metadata_from_file(base_name):
+    """JS یا JSON فائل سے میٹا ڈیٹا لوڈ کرنا"""
+    title = "Manhwa Recap Video"
+    description = "Automated Manhwa/Anime recap video upload."
+    tags = ["anime", "manhwa", "recap"]
+
+    # 1. Check JS/JSON files matching base name or data.js / queue.json
+    data_files = [f"{base_name}.json", f"{base_name}.js", "data.json", "data.js", "queue.json"]
+    
+    for df in data_files:
+        if os.path.exists(df):
+            try:
+                with open(df, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                    # If it's a JS file like `module.exports = {...}` or `const data = {...}`
+                    if df.endswith('.js') and '{' in content:
+                        content = content[content.find('{'):content.rfind('}')+1]
+                    
+                    data = json.loads(content)
+                    title = data.get('title', title)
+                    description = data.get('description', description)
+                    tags = data.get('tags', tags)
+                    print(f"📝 Loaded Title & Metadata from: {df}")
+                    break
+            except Exception as e:
+                print(f"⚠️ Could not parse metadata file {df}: {e}")
+                
+    return title, description, tags
+
 def main():
-    raw_video = "raw_video.mp4"
-    processed_video = "processed_full_video.mp4"
-
-    # Step 1: Process and Edit Video
-    if os.path.exists(raw_video):
+    # 1. ڈھونڈیں کہ کون سی ویڈیو فائل موجود ہے
+    raw_video = None
+    for f in os.listdir('.'):
+        if f.endswith('.mp4') and not f.startswith('processed_'):
+            raw_video = f
+            break
+            
+    if not raw_video:
+        if os.path.exists('processed_full_video.mp4'):
+            processed_video = 'processed_full_video.mp4'
+            base_name = 'video'
+        else:
+            print("❌ Error: No video file found for processing.")
+            return
+    else:
+        base_name = os.path.splitext(raw_video)[0]
+        processed_video = f"processed_{raw_video}"
         process_video_with_pro_editing(raw_video, processed_video)
-    elif not os.path.exists(processed_video):
-        print(f"❌ Error: Neither {raw_video} nor {processed_video} found.")
-        return
 
-    # Step 2: YouTube API Authentication
+    # 2. سیم نام والا تھمب نیل اور JS/JSON سے ڈیٹا حاصل کریں
+    thumbnail_file = find_thumbnail(base_name)
+    title, description, tags = load_metadata_from_file(base_name)
+
+    print(f"📌 Video Title: {title}")
+    print(f"🖼️ Thumbnail File: {thumbnail_file if thumbnail_file else 'Not found'}")
+
+    # 3. یوٹیوب اپلوڈ
     youtube = get_youtube_service()
-    print("✅ YouTube API Successfully Connected!")
+    print("✅ YouTube API Connected Successfully!")
 
-    # Step 3: Metadata and Upload
     body = {
         'snippet': {
-            'title': 'Manhwa Recap Video',
-            'description': 'Automated Manhwa/Anime recap video upload.',
-            'tags': ['anime', 'manhwa', 'recap'],
+            'title': title,
+            'description': description,
+            'tags': tags,
             'categoryId': '24'
         },
         'status': {
@@ -112,7 +153,22 @@ def main():
         if status:
             print(f"🚀 Uploading progress: {int(status.progress() * 100)}%")
 
-    print(f"🎉 Video Uploaded Successfully! Video ID: {response['id']}")
+    video_id = response['id']
+    print(f"🎉 Video Uploaded Successfully! Video ID: {video_id}")
+
+    # 4. سیم نام والا تھمب نیل اپلوڈ کریں
+    if thumbnail_file and os.path.exists(thumbnail_file):
+        try:
+            print(f"🖼️ Uploading Matching Thumbnail: {thumbnail_file}...")
+            youtube.thumbnails().set(
+                videoId=video_id,
+                media_body=MediaFileUpload(thumbnail_file)
+            ).execute()
+            print("✅ Custom Thumbnail Uploaded Successfully!")
+        except Exception as e:
+            print(f"⚠️ Warning: Could not upload thumbnail: {e}")
+    else:
+        print("ℹ️ No matching thumbnail image found, skipping thumbnail upload.")
 
 if __name__ == '__main__':
     main()
