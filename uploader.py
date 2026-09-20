@@ -1,90 +1,25 @@
+cat << 'EOF' > uploader.py
 import os
 import json
 import subprocess
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
-import io
 
-def get_drive_service():
-    if not os.path.exists('token.json'):
-        raise FileNotFoundError("token.json missing!")
-    with open('token.json', 'r') as f:
-        token_data = json.load(f)
-    creds = Credentials.from_authorized_user_info(token_data)
-    return build('drive', 'v3', credentials=creds)
-
-def get_youtube_service():
-    if not os.path.exists('token.json'):
-        raise FileNotFoundError("token.json missing!")
-    with open('token.json', 'r') as f:
-        token_data = json.load(f)
-    creds = Credentials.from_authorized_user_info(token_data)
-    return build('youtube', 'v3', credentials=creds)
-
-def download_files_from_drive(drive_service):
-    """Google Drive سے ملتی جلتی فائلیں ڈاؤن لوڈ کرنا"""
-    print("📥 Checking Google Drive for files...")
-    results = drive_service.files().list(
-        pageSize=20, 
-        fields="nextPageToken, files(id, name)"
-    ).execute()
-    items = results.get('files', [])
-
-    if not items:
-        print("❌ No files found in Google Drive.")
-        return None, None, None
-
-    raw_video_file = None
-    thumbnail_file = None
-    metadata_file = None
-    base_name = None
-
-    # Find raw video first
-    for item in items:
-        name = item['name']
-        if name.endswith('.mp4') and not name.startswith('processed_'):
-            raw_video_file = item
-            base_name = os.path.splitext(name)[0]
-            break
-
-    if not raw_video_file:
-        print("❌ No .mp4 video file found in Google Drive.")
-        return None, None, None
-
-    # Download Video
-    print(f"📥 Downloading raw video: {raw_video_file['name']}...")
-    request = drive_service.files().get_media(fileId=raw_video_file['id'])
-    with open(raw_video_file['name'], 'wb') as fh:
+def download_file_from_drive(drive_service, file_name, file_id):
+    request = drive_service.files().get_media(fileId=file_id)
+    with open(file_name, 'wb') as fh:
         downloader = MediaIoBaseDownload(fh, request)
         done = False
         while not done:
             status, done = downloader.next_chunk()
 
-    # Look for matching thumbnail and metadata files
-    for item in items:
-        name = item['name']
-        if base_name in name or name in ['queue.json', 'data.js', 'data.json']:
-            if name.endswith(('.jpg', '.png', '.jpeg', '.webp')):
-                thumbnail_file = item
-            elif name.endswith(('.json', '.js')):
-                metadata_file = item
-
-    # Download Thumbnail if exists
-    if thumbnail_file:
-        print(f"🖼️ Downloading thumbnail: {thumbnail_file['name']}...")
-        req = drive_service.files().get_media(fileId=thumbnail_file['id'])
-        with open(thumbnail_file['name'], 'wb') as fh:
-            MediaIoBaseDownload(fh, req).next_chunk()
-
-    # Download Metadata file if exists
-    if metadata_file:
-        print(f"📝 Downloading metadata: {metadata_file['name']}...")
-        req = drive_service.files().get_media(fileId=metadata_file['id'])
-        with open(metadata_file['name'], 'wb') as fh:
-            MediaIoBaseDownload(fh, req).next_chunk()
-
-    return raw_video_file['name'], thumbnail_file['name'] if thumbnail_file else None, metadata_file['name'] if metadata_file else None
+def safe_delete_from_drive(drive_service, file_id):
+    try:
+        drive_service.files().delete(fileId=file_id).execute()
+        print(f"🗑️ Drive file {file_id} deleted successfully.")
+    except Exception as e:
+        print(f"⚠️ Drive deletion warning: {e}")
 
 def process_video_with_pro_editing(input_file, output_file):
     print(f"🎬 Starting Professional Video Processing on: {input_file}")
@@ -96,7 +31,7 @@ def process_video_with_pro_editing(input_file, output_file):
         duration = float(subprocess.check_output(duration_cmd).decode('utf-8').strip())
         fade_out_start = max(0, duration - 0.1)
     except Exception as e:
-        print(f"⚠️ Could not detect duration ({e}). Defaulting to fallback.")
+        print(f"⚠️ Duration check fallback ({e}).")
         fade_out_start = 119.9
 
     ffmpeg_cmd = [
@@ -115,43 +50,99 @@ def process_video_with_pro_editing(input_file, output_file):
     if result.returncode != 0:
         print(f"❌ FFmpeg Error: {result.stderr.decode('utf-8')}")
         raise RuntimeError("Video processing failed.")
-    print("✨ Video Editing Completed Successfully!")
+    print("✨ Professional Video Editing Completed!")
 
-def load_metadata(metadata_filename):
+def load_metadata_from_queue(queue_filename, video_base_name):
     title = "Manhwa Recap Video"
     description = "Automated Manhwa/Anime recap video upload."
     tags = ["anime", "manhwa", "recap"]
 
-    if metadata_filename and os.path.exists(metadata_filename):
+    if os.path.exists(queue_filename):
         try:
-            with open(metadata_filename, 'r', encoding='utf-8') as f:
+            with open(queue_filename, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
-                if metadata_filename.endswith('.js') and '{' in content:
-                    content = content[content.find('{'):content.rfind('}')+1]
                 data = json.loads(content)
-                title = data.get('title', title)
-                description = data.get('description', description)
-                tags = data.get('tags', tags)
-                print("📝 Loaded Title, Description & Tags!")
+                # اگر queue.json ایک لسٹ ہے تو پہلی آئٹم یا ویڈیو کے نام والی آئٹم اٹھائیں
+                if isinstance(data, list) and len(data) > 0:
+                    item = data[0] # ضرورت کے مطابق میچنگ لگائی جا سکتی ہے
+                    title = item.get('title', title)
+                    description = item.get('description', description)
+                    tags = item.get('tags', tags)
+                elif isinstance(data, dict):
+                    title = data.get('title', title)
+                    description = data.get('description', description)
+                    tags = data.get('tags', tags)
+                print("📝 Successfully loaded Title, Description & Tags from queue.json!")
         except Exception as e:
-            print(f"⚠️ Metadata read error: {e}")
+            print(f"⚠️ queue.json parse warning: {e}")
     return title, description, tags
 
 def main():
-    drive_service = get_drive_service()
-    raw_video, thumbnail_file, metadata_file = download_files_from_drive(drive_service)
-
-    if not raw_video:
-        print("❌ Error: No video downloaded from Drive. Aborting.")
+    # 1. لوکل یا ڈرائیو سے token.json تلاش کرنا
+    if not os.path.exists('token.json'):
+        print("❌ token.json missing locally!")
         return
 
-    processed_video = f"processed_{raw_video}"
-    process_video_with_pro_editing(raw_video, processed_video)
+    with open('token.json', 'r') as f:
+        token_data = json.load(f)
+    creds = Credentials.from_authorized_user_info(token_data)
 
-    title, description, tags = load_metadata(metadata_file)
-    youtube = get_youtube_service()
-    print("✅ YouTube API Connected!")
+    drive_service = build('drive', 'v3', credentials=creds)
+    youtube_service = build('youtube', 'v3', credentials=creds)
 
+    print("📥 Scanning Google Drive folder...")
+    results = drive_service.files().list(
+        pageSize=50, 
+        fields="nextPageToken, files(id, name)"
+    ).execute()
+    items = results.get('files', [])
+
+    raw_video_item = None
+    thumbnail_item = None
+    queue_item = None
+    base_name = None
+
+    # پہلی را ویڈیو تلاش کرنا جو پروسیس نہ ہوئی ہو
+    for item in items:
+        name = item['name']
+        if name.endswith('.mp4') and not name.startswith('processed_'):
+            raw_video_item = item
+            base_name = os.path.splitext(name)[0].strip()
+            break
+
+    if not raw_video_item:
+        print("❌ No video file (.mp4) found in Google Drive to process.")
+        return
+
+    print(f"📥 Downloading raw video: {raw_video_item['name']}...")
+    download_file_from_drive(drive_service, raw_video_item['name'], raw_video_item['id'])
+
+    # سیم نام کا تھمب نیل اور queue.json تلاش کرنا
+    for item in items:
+        name = item['name']
+        if name == 'queue.json':
+            queue_item = item
+        elif base_name and base_name in os.path.splitext(name)[0]:
+            if name.endswith(('.jpg', '.png', '.jpeg', '.webp')):
+                thumbnail_item = item
+
+    if thumbnail_item:
+        print(f"🖼️ Downloading matching thumbnail: {thumbnail_item['name']}...")
+        download_file_from_drive(drive_service, thumbnail_item['name'], thumbnail_item['id'])
+
+    if queue_item:
+        print("📝 Downloading queue.json...")
+        download_file_from_drive(drive_service, 'queue.json', queue_item['id'])
+
+    # 2. ویڈیو ایڈیٹنگ
+    processed_video = f"processed_{raw_video_item['name']}"
+    process_video_with_pro_editing(raw_video_item['name'], processed_video)
+
+    # 3. میٹا ڈیٹا لوڈ کرنا
+    title, description, tags = load_metadata_from_queue('queue.json', base_name)
+
+    # 4. یوٹیوب اپلوڈ
+    print("✅ YouTube API Connected Successfully!")
     body = {
         'snippet': {
             'title': title,
@@ -166,7 +157,7 @@ def main():
     }
 
     media = MediaFileUpload(processed_video, chunksize=-1, resumable=True)
-    request = youtube.videos().insert(part=','.join(body.keys()), body=body, media_body=media)
+    request = youtube_service.videos().insert(part=','.join(body.keys()), body=body, media_body=media)
 
     response = None
     while response is None:
@@ -177,14 +168,25 @@ def main():
     video_id = response['id']
     print(f"🎉 Video Uploaded Successfully! Video ID: {video_id}")
 
-    if thumbnail_file and os.path.exists(thumbnail_file):
+    # 5. تھمب نیل اپلوड
+    thumbnail_filename = thumbnail_item['name'] if thumbnail_item else None
+    if thumbnail_filename and os.path.exists(thumbnail_filename):
         try:
-            print(f"🖼️ Uploading Thumbnail: {thumbnail_file}...")
-            youtube.thumbnails().set(videoId=video_id, media_body=MediaFileUpload(thumbnail_file)).execute()
-            print("✅ Custom Thumbnail Uploaded!")
+            print(f"🖼️ Uploading Thumbnail: {thumbnail_filename}...")
+            youtube_service.thumbnails().set(
+                videoId=video_id,
+                media_body=MediaFileUpload(thumbnail_filename)
+            ).execute()
+            print("✅ Custom Thumbnail Uploaded Successfully!")
         except Exception as e:
-            print(f"⚠️ Thumbnail Upload Warning: {e}")
+            print(f"⚠️ Custom Thumbnail Upload Warning: {e}")
+
+    # 6. ڈرائیو سے را ویڈیو ڈیلیٹ کرنا
+    safe_delete_from_drive(drive_service, raw_video_item['id'])
 
 if __name__ == '__main__':
     main()
-    
+EOF
+
+git add uploader.py && git commit -m "Update uploader with exact matching for video, thumbnail and queue.json" && git push origin main
+        
