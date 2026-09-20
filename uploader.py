@@ -1,10 +1,28 @@
-cat << 'EOF' > uploader.py
+rm -f uploader.py && cat << 'EOF' > uploader.py
 import os
 import json
 import subprocess
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+
+def get_drive_and_youtube_services():
+    """GitHub Secrets یا انوائرنमेंट ویری ایبل سے ٹوکن لے کر ڈرائیو اور یوٹیوب سروس بنانا"""
+    # اگر ٹوکن یا کلائنٹ سیک্রেট env میں محفوظ ہیں تو وہاں سے لوڈ کریں
+    token_info = os.environ.get("GOOGLE_TOKEN_JSON")
+    if token_info:
+        token_data = json.loads(token_info)
+        creds = Credentials.from_authorized_user_info(token_data)
+    elif os.path.exists('token.json'):
+        with open('token.json', 'r') as f:
+            token_data = json.load(f)
+        creds = Credentials.from_authorized_user_info(token_data)
+    else:
+        raise FileNotFoundError("Google OAuth token not found in Environment variables or local path!")
+
+    drive_service = build('drive', 'v3', credentials=creds)
+    youtube_service = build('youtube', 'v3', credentials=creds)
+    return drive_service, youtube_service
 
 def download_file_from_drive(drive_service, file_name, file_id):
     request = drive_service.files().get_media(fileId=file_id)
@@ -52,7 +70,7 @@ def process_video_with_pro_editing(input_file, output_file):
         raise RuntimeError("Video processing failed.")
     print("✨ Professional Video Editing Completed!")
 
-def load_metadata_from_queue(queue_filename, video_base_name):
+def load_metadata_from_queue(queue_filename):
     title = "Manhwa Recap Video"
     description = "Automated Manhwa/Anime recap video upload."
     tags = ["anime", "manhwa", "recap"]
@@ -77,19 +95,19 @@ def load_metadata_from_queue(queue_filename, video_base_name):
     return title, description, tags
 
 def main():
-    if not os.path.exists('token.json'):
-        print("❌ token.json missing locally!")
-        return
+    drive_service, youtube_service = get_drive_and_youtube_services()
 
-    with open('token.json', 'r') as f:
-        token_data = json.load(f)
-    creds = Credentials.from_authorized_user_info(token_data)
-
-    drive_service = build('drive', 'v3', credentials=creds)
-    youtube_service = build('youtube', 'v3', credentials=creds)
-
+    # GitHub Secrets سے Google Drive Folder ID حاصل کرنا (اگر موجود ہو)
+    folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID")
+    
     print("📥 Scanning Google Drive folder...")
+    if folder_id:
+        query = f"'{folder_id}' in parents and trashed = false"
+    else:
+        query = "trashed = false"
+
     results = drive_service.files().list(
+        q=query,
         pageSize=50, 
         fields="nextPageToken, files(id, name)"
     ).execute()
@@ -108,7 +126,7 @@ def main():
             break
 
     if not raw_video_item:
-        print("❌ No video file (.mp4) found in Google Drive to process.")
+        print("❌ No video file (.mp4) found in the Google Drive folder to process.")
         return
 
     print(f"📥 Downloading raw video: {raw_video_item['name']}...")
@@ -133,7 +151,7 @@ def main():
     processed_video = f"processed_{raw_video_item['name']}"
     process_video_with_pro_editing(raw_video_item['name'], processed_video)
 
-    title, description, tags = load_metadata_from_queue('queue.json', base_name)
+    title, description, tags = load_metadata_from_queue('queue.json')
 
     print("✅ YouTube API Connected Successfully!")
     body = {
@@ -178,4 +196,5 @@ def main():
 if __name__ == '__main__':
     main()
 EOF
-                             
+
+git add uploader.py && git commit -m "Update uploader to target Google Drive folder via ID from secrets" && git push origin main
