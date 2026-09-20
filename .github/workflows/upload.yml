@@ -26,9 +26,12 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install google-api-python-client google-auth-oauthlib google-auth-httplib2 ffmpeg-python
+          pip install google-api-python-client google-auth-oauthlib google-auth-httplib2 ffmpeg-python requests
 
       - name: Run Video Processor & YouTube Uploader
+        env:
+          SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
         run: |
           python uploader.py
           
