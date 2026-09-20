@@ -1,18 +1,18 @@
 import os
 import json
 import subprocess
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from google.oauth2.credentials import Credentials
 
-# --- Configuration ---
 DRIVE_FOLDER_ID = os.environ.get('DRIVE_FOLDER_ID')
 SERVICE_ACCOUNT_JSON = os.environ.get('SERVICE_ACCOUNT_JSON')
 YOUTUBE_CLIENT_SECRET_JSON = os.environ.get('YOUTUBE_CLIENT_SECRET_JSON')
 YOUTUBE_TOKEN_JSON = os.environ.get('YOUTUBE_TOKEN_JSON')
 
-# 1. Google Drive Connection
+# 1. Drive Connection
 with open('service_account.json', 'w') as f:
     f.write(SERVICE_ACCOUNT_JSON)
 
@@ -21,14 +21,20 @@ creds_drive = service_account.Credentials.from_service_account_file(
 )
 drive_service = build('drive', 'v3', credentials=creds_drive)
 
-# 2. YouTube API Connection
-with open('client_secret.json', 'w') as f:
-    f.write(YOUTUBE_CLIENT_SECRET_JSON)
+# 2. YouTube Auto-Refreshing Connection
+token_data = json.loads(YOUTUBE_TOKEN_JSON)
 
-with open('token.json', 'w') as f:
-    f.write(YOUTUBE_TOKEN_JSON)
+creds_yt = Credentials(
+    token=None,
+    refresh_token=token_data['refresh_token'],
+    token_uri=token_data['token_uri'],
+    client_id=token_data['client_id'],
+    client_secret=token_data['client_secret'],
+    scopes=token_data['scopes']
+)
 
-creds_yt = Credentials.from_authorized_user_file('token.json', ['https://www.googleapis.com/auth/youtube.upload'])
+# Force Refresh Token to get fresh access token instantly
+creds_yt.refresh(Request())
 youtube = build('youtube', 'v3', credentials=creds_yt)
 
 def download_from_drive(file_id, output_path):
@@ -40,7 +46,7 @@ def delete_from_drive(file_id):
     drive_service.files().delete(fileId=file_id).execute()
 
 def edit_anti_copyright_fast_test(input_video, output_video):
-    print("🎬 FAST TEST: ویڈیو چاہے کتنی بھی لمبی ہو، صرف پہلے 2 منٹ (120s) کٹ اور ایڈٹ ہو رہے ہیں...")
+    print("🎬 FAST TEST: صرف پہلے 2 منٹ (120s) کٹ اور ایڈٹ ہو رہے ہیں...")
     cmd = [
         'ffmpeg', '-y',
         '-ss', '00:00:00',
@@ -83,11 +89,11 @@ def main():
         queue = json.load(f)
 
     if not queue:
-        print("ℹ️ Queue خالی ہے، کوئی ویڈیو باقی نہیں ہے۔")
+        print("ℹ️ Queue خالی ہے۔")
         return
 
     item = queue.pop(0)
-    print(f"🚀 Fast Testing Video: {item['title']}")
+    print(f"🚀 Processing: {item['title']}")
 
     v_query = f"name = '{item['filename']}' and '{DRIVE_FOLDER_ID}' in parents and trashed = false"
     v_results = drive_service.files().list(q=v_query, fields="files(id)").execute()
@@ -98,11 +104,8 @@ def main():
         return
 
     video_id = v_files[0]['id']
-    raw_video_path = "raw_video.mp4"
-    edited_video_path = "edited_video.mp4"
-
-    download_from_drive(video_id, raw_video_path)
-    edit_anti_copyright_fast_test(raw_video_path, edited_video_path)
+    download_from_drive(video_id, 'raw_video.mp4')
+    edit_anti_copyright_fast_test('raw_video.mp4', 'edited_video.mp4')
 
     body = {
         'snippet': {
@@ -117,7 +120,7 @@ def main():
         }
     }
 
-    media = MediaFileUpload(edited_video_path, chunksize=-1, resumable=True)
+    media = MediaFileUpload('edited_video.mp4', chunksize=-1, resumable=True)
     request = youtube.videos().insert(part=','.join(body.keys()), body=body, media_body=media)
     response = request.execute()
     yt_video_id = response['id']
@@ -132,9 +135,9 @@ def main():
     with open('queue.json', 'w') as f:
         json.dump(queue, f, indent=4)
 
-    media_queue = MediaFileUpload('queue.json')
-    drive_service.files().update(fileId=queue_file_id, media_body=media_queue).execute()
-    print("✅ Drive سے اصل ویڈیو ڈیلیٹ ہو گئی اور queue.json اپ ڈیٹ ہو گئی۔")
+    drive_service.files().update(fileId=queue_file_id, media_body=MediaFileUpload('queue.json')).execute()
+    print("✅ Drive سے ویڈیو ڈیلیٹ اور queue.json اپ ڈیٹ ہو گئی۔")
 
 if __name__ == '__main__':
     main()
+                                 
