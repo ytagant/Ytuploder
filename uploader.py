@@ -61,14 +61,18 @@ def upload_thumbnail(youtube, video_id, thumbnail_filename):
 
 def get_youtube_service():
     print("🔑 Connecting to YouTube API...")
+    client_secret_data = json.loads(YOUTUBE_CLIENT_SECRET_JSON)
     token_data = json.loads(YOUTUBE_TOKEN_JSON)
+
+    client_info = client_secret_data.get('web') or client_secret_data.get('installed')
+
     creds_yt = Credentials(
-        token=None,
-        refresh_token=token_data['refresh_token'],
-        token_uri=token_data['token_uri'],
-        client_id=token_data['client_id'],
-        client_secret=token_data['client_secret'],
-        scopes=token_data['scopes']
+        token=token_data.get('token'),
+        refresh_token=token_data.get('refresh_token'),
+        token_uri=client_info['token_uri'],
+        client_id=client_info['client_id'],
+        client_secret=client_info['client_secret'],
+        scopes=token_data.get('scopes')
     )
     creds_yt.refresh(Request())
     return build('youtube', 'v3', credentials=creds_yt)
