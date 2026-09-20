@@ -42,7 +42,6 @@ def delete_from_drive(file_id):
 def edit_anti_copyright_full_video(input_video, output_video):
     print("🎬 FULL VIDEO PROCESSING: ایڈوانسڈ فلٹرز (مائیکرو کراپ، شارپننگ، کلرز، اور سوفٹ فلیش) کے ساتھ ایڈیٹنگ جاری ہے...")
     
-    # فکسڈ اور محفوظ ویڈیو فلٹر (بگ فری اور کوالٹی سیف)
     video_filter = (
         "crop=iw-2:ih-2:1:1,scale=iw:ih,"
         "eq=brightness=0.01:contrast=1.04:saturation=1.08,"
@@ -55,7 +54,6 @@ def edit_anti_copyright_full_video(input_video, output_video):
         'ffmpeg', '-y',
         '-i', input_video,
         '-vf', video_filter,
-        # آڈیو: لپس سنک 100% محفوظ رکھنے کے لیے اسپیڈ نہیں بدلی گئی، صرف loudnorm استعمال کیا گیا ہے
         '-af', "loudnorm=I=-16:TP=-1.5:LRA=11",
         '-c:v', 'libx264', '-preset', 'medium', '-crf', '21',
         '-pix_fmt', 'yuv420p',
@@ -74,7 +72,7 @@ def get_file_id_by_name(filename):
     return None
 
 def get_youtube_service():
-    print("🔑 Google Drive سے client_secret.json اور token.json ڈاؤن لوڈ ہو رہے हैं...")
+    print("🔑 Google Drive سے client_secret.json اور token.json ڈاؤن لوڈ ہو رہے ہیں...")
     
     cs_id = get_file_id_by_name('client_secret.json')
     tk_id = get_file_id_by_name('token.json')
@@ -129,7 +127,6 @@ def main():
         print("ℹ️ Queue خالی ہے۔")
         return
 
-    # ہسٹری فائل چیک کریں (ڈپلیکیشن سے بچنے کے لیے)
     history = []
     history_file_id = get_file_id_by_name('processed_history.json')
     if history_file_id:
@@ -140,7 +137,6 @@ def main():
         except:
             history = []
 
-    # کیو سے ایسی ویڈیو تلاش کریں جو پہلے پروسیس نہ ہوئی ہو
     item = None
     while queue:
         potential_item = queue[0]
@@ -171,7 +167,6 @@ def main():
 
     youtube = get_youtube_service()
 
-    # queue.json سے ٹائٹل، ڈسکرپشن اور ٹیگز خود بخود اٹھائے جائیں گے
     body = {
         'snippet': {
             'title': item['title'],
@@ -195,10 +190,8 @@ def main():
     if 'thumbnail' in item:
         upload_thumbnail(youtube, yt_video_id, item['thumbnail'])
 
-    # گوگل ڈرائیو سے اصل ویڈیو ڈیلیٹ کریں
     delete_from_drive(video_id)
 
-    # ہسٹری میں ویڈیو کا نام شامل کریں اور گوگل ڈرائیو پر اپ ڈیٹ/کریٹ کریں
     history.append(item['filename'])
     with open('processed_history.json', 'w') as f:
         json.dump(history, f, indent=4)
@@ -210,7 +203,6 @@ def main():
         file_metadata = {'name': 'processed_history.json', 'parents': [DRIVE_FOLDER_ID]}
         drive_service.files().create(body=file_metadata, media_body=media_history, fields='id').execute()
 
-    # کیو (queue.json) کو اپ ڈیٹ کریں
     with open('queue.json', 'w') as f:
         json.dump(queue, f, indent=4)
 
