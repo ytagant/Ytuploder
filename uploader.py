@@ -21,16 +21,24 @@ drive_service = build('drive', 'v3', credentials=creds_drive)
 
 def download_from_drive(file_id, output_path):
     print(f"📥 Downloading file {output_path} from Drive...")
-    request = drive_service.files().get_media(fileId=file_id)
-    with open(output_path, 'wb') as f:
-        f.write(request.execute())
+    try:
+        # Normal media / json download
+        request = drive_service.files().get_media(fileId=file_id)
+        with open(output_path, 'wb') as f:
+            f.write(request.execute())
+    except Exception as e:
+        # Fallback if Drive converted file into Google Doc / Text
+        print(f"⚠️ Standard download failed, trying export for {output_path}...")
+        request = drive_service.files().export_media(fileId=file_id, mimeType='text/plain')
+        with open(output_path, 'wb') as f:
+            f.write(request.execute())
     print("✅ Download Complete!")
 
 def delete_from_drive(file_id):
     drive_service.files().delete(fileId=file_id).execute()
 
 def edit_anti_copyright_fast_test(input_video, output_video):
-    print("🎬 FAST TEST: बड़ी वीडियो में से सिर्फ पहले 2 मिनट (120s) कट और एडिट हो रहे हैं...")
+    print("🎬 FAST TEST: بڑی ویڈیو میں سے صرف پہلے 2 منٹ (120s) کٹ اور ایڈٹ ہو رہے ہیں...")
     cmd = [
         'ffmpeg', '-y',
         '-ss', '00:00:00',
@@ -54,13 +62,13 @@ def get_file_id_by_name(filename):
     return None
 
 def get_youtube_service():
-    print("🔑 Google Drive से client_secret.json और token.json डाउनलोड हो रहे हैं...")
+    print("🔑 Google Drive سے client_secret.json اور token.json ڈاؤن لوڈ ہو رہے ہیں...")
     
     cs_id = get_file_id_by_name('client_secret.json')
     tk_id = get_file_id_by_name('token.json')
     
     if not cs_id or not tk_id:
-        raise Exception("❌ Google Drive में client_secret.json या token.json नहीं मिली!")
+        raise Exception("❌ Google Drive میں client_secret.json یا token.json نہیں ملی!")
 
     download_from_drive(cs_id, 'client_secret.json')
     download_from_drive(tk_id, 'token.json')
@@ -97,7 +105,7 @@ def main():
     queue_file_id = get_file_id_by_name('queue.json')
 
     if not queue_file_id:
-        print("ℹ️ Google Drive में queue.json नहीं मिली।")
+        print("ℹ️ Google Drive میں queue.json نہیں ملی۔")
         return
 
     download_from_drive(queue_file_id, 'queue.json')
@@ -106,7 +114,7 @@ def main():
         queue = json.load(f)
 
     if not queue:
-        print("ℹ️ Queue खाली है।")
+        print("ℹ️ Queue خالی ہے۔")
         return
 
     item = queue.pop(0)
@@ -115,19 +123,19 @@ def main():
     video_id = get_file_id_by_name(item['filename'])
 
     if not video_id:
-        print(f"❌ Video file {item['filename']} Drive पर नहीं मिली।")
+        print(f"❌ Video file {item['filename']} Drive پر نہیں ملی۔")
         return
 
-    # 1. Drive से वीडियो डाउनलोड करें
+    # 1. Drive سے ویڈیو ڈاؤن لوڈ کریں
     download_from_drive(video_id, 'raw_video.mp4')
     
-    # 2. सिर्फ पहले 2 मिनट की फास्ट एडिटिंग करें
+    # 2. صرف پہلے 2 منٹ کی فاسٹ ایڈٹنگ کریں
     edit_anti_copyright_fast_test('raw_video.mp4', 'edited_video.mp4')
 
-    # 3. Drive की फाइलों से YouTube कनेक्शन बनाएं
+    # 3. Drive کی فائلوں سے YouTube کنکشن بنائیں
     youtube = get_youtube_service()
 
-    # 4. 2 मिनट की वीडियो अपलोड करें
+    # 4. 2 منٹ کی ویڈیو اپ لوڈ کریں
     body = {
         'snippet': {
             'title': item['title'],
@@ -146,7 +154,7 @@ def main():
     response = request.execute()
     yt_video_id = response['id']
 
-    print(f"🎉 2-Min Test Video YouTube पर सफलता से अपलोड हो गई! Video ID: {yt_video_id}")
+    print(f"🎉 2-Min Test Video YouTube پر کامیابی سے اپ لوڈ ہو گئی! Video ID: {yt_video_id}")
 
     if 'thumbnail' in item:
         upload_thumbnail(youtube, yt_video_id, item['thumbnail'])
@@ -157,7 +165,7 @@ def main():
         json.dump(queue, f, indent=4)
 
     drive_service.files().update(fileId=queue_file_id, media_body=MediaFileUpload('queue.json')).execute()
-    print("✅ Drive से वीडियो डिलीट और queue.json अपडेट हो गई।")
+    print("✅ Drive سے ویڈیو ڈیلیٹ اور queue.json اپ ڈیٹ ہو گئی۔")
 
 if __name__ == '__main__':
     main()
