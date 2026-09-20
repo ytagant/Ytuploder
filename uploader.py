@@ -62,9 +62,8 @@ def load_metadata_from_queue(queue_filename, video_base_name):
             with open(queue_filename, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
                 data = json.loads(content)
-                # اگر queue.json ایک لسٹ ہے تو پہلی آئٹم یا ویڈیو کے نام والی آئٹم اٹھائیں
                 if isinstance(data, list) and len(data) > 0:
-                    item = data[0] # ضرورت کے مطابق میچنگ لگائی جا سکتی ہے
+                    item = data[0]
                     title = item.get('title', title)
                     description = item.get('description', description)
                     tags = item.get('tags', tags)
@@ -78,7 +77,6 @@ def load_metadata_from_queue(queue_filename, video_base_name):
     return title, description, tags
 
 def main():
-    # 1. لوکل یا ڈرائیو سے token.json تلاش کرنا
     if not os.path.exists('token.json'):
         print("❌ token.json missing locally!")
         return
@@ -102,7 +100,6 @@ def main():
     queue_item = None
     base_name = None
 
-    # پہلی را ویڈیو تلاش کرنا جو پروسیس نہ ہوئی ہو
     for item in items:
         name = item['name']
         if name.endswith('.mp4') and not name.startswith('processed_'):
@@ -117,7 +114,6 @@ def main():
     print(f"📥 Downloading raw video: {raw_video_item['name']}...")
     download_file_from_drive(drive_service, raw_video_item['name'], raw_video_item['id'])
 
-    # سیم نام کا تھمب نیل اور queue.json تلاش کرنا
     for item in items:
         name = item['name']
         if name == 'queue.json':
@@ -134,14 +130,11 @@ def main():
         print("📝 Downloading queue.json...")
         download_file_from_drive(drive_service, 'queue.json', queue_item['id'])
 
-    # 2. ویڈیو ایڈیٹنگ
     processed_video = f"processed_{raw_video_item['name']}"
     process_video_with_pro_editing(raw_video_item['name'], processed_video)
 
-    # 3. میٹا ڈیٹا لوڈ کرنا
     title, description, tags = load_metadata_from_queue('queue.json', base_name)
 
-    # 4. یوٹیوب اپلوڈ
     print("✅ YouTube API Connected Successfully!")
     body = {
         'snippet': {
@@ -168,7 +161,6 @@ def main():
     video_id = response['id']
     print(f"🎉 Video Uploaded Successfully! Video ID: {video_id}")
 
-    # 5. تھمب نیل اپلوड
     thumbnail_filename = thumbnail_item['name'] if thumbnail_item else None
     if thumbnail_filename and os.path.exists(thumbnail_filename):
         try:
@@ -181,12 +173,9 @@ def main():
         except Exception as e:
             print(f"⚠️ Custom Thumbnail Upload Warning: {e}")
 
-    # 6. ڈرائیو سے را ویڈیو ڈیلیٹ کرنا
     safe_delete_from_drive(drive_service, raw_video_item['id'])
 
 if __name__ == '__main__':
     main()
 EOF
-
-git add uploader.py && git commit -m "Update uploader with exact matching for video, thumbnail and queue.json" && git push origin main
-        
+                             
