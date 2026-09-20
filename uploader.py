@@ -10,7 +10,7 @@ from googleapiclient.http import MediaFileUpload
 DRIVE_FOLDER_ID = os.environ.get('DRIVE_FOLDER_ID')
 SERVICE_ACCOUNT_JSON = os.environ.get('SERVICE_ACCOUNT_JSON')
 
-# 1. Drive Connection Setup
+# 1. Google Drive Connection Setup
 with open('service_account.json', 'w') as f:
     f.write(SERVICE_ACCOUNT_JSON)
 
@@ -33,31 +33,37 @@ def download_from_drive(file_id, output_path):
     print("✅ Download Complete!")
 
 def delete_from_drive(file_id):
-    drive_service.files().delete(fileId=file_id).execute()
+    try:
+        drive_service.files().delete(fileId=file_id).execute()
+        print(f"🗑️ File ID {file_id} successfully deleted from Drive.")
+    except Exception as e:
+        print(f"⚠️ Could not delete file from Drive: {e}")
 
 def edit_anti_copyright_full_video(input_video, output_video):
-    print("🎬 FULL VIDEO PROCESSING: پوری ویڈیو پر اینٹی کاپی رائٹ ایڈیٹنگ اور بلیک کٹ ٹرانزिशन لگایا جا رہا ہے...")
+    print("🎬 FULL VIDEO PROCESSING: ایڈوانسڈ فلٹرز (مائیکرو کراپ، شارپننگ، کلرز، اور سوفٹ فلیش) کے ساتھ ایڈیٹنگ جاری ہے...")
     
-    # یہاں expr کی جگہ درست drawbox سینٹیکس استعمال کیا گیا ہے جو بلैक फ्लैश کٹ لگائے گا
+    # فکسڈ اور محفوظ ویڈیو فلٹر (بگ فری اور کوالٹی سیف)
     video_filter = (
-        "hflip,"
-        "eq=brightness=0.02:contrast=1.05:saturation=1.1,"
-        "setpts=PTS/1.03,"
-        "fade=t=in:st=0:d=0.1,"
-        "drawbox=enable='lt(mod(t,10),0.01)':x=0:y=0:w=iw:h=ih:color=black:t=fill"
+        "crop=iw-2:ih-2:1:1,scale=iw:ih,"
+        "eq=brightness=0.01:contrast=1.04:saturation=1.08,"
+        "unsharp=5:5:0.8:3:3:0.4,"
+        "noise=alls=5:allf=t+u,"
+        "drawbox=enable='lt(mod(t,12),0.02)':x=0:y=0:w=iw:h=ih:color=black@0.12:t=fill"
     )
 
     cmd = [
         'ffmpeg', '-y',
         '-i', input_video,
         '-vf', video_filter,
-        '-af', "atempo=1.03,asetrate=44100*1.02,aresample=44100",
-        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-        '-c:a', 'aac', '-b:a', '128k',
+        # آڈیو: لپس سنک 100% محفوظ رکھنے کے لیے اسپیڈ نہیں بدلی گئی، صرف loudnorm استعمال کیا گیا ہے
+        '-af', "loudnorm=I=-16:TP=-1.5:LRA=11",
+        '-c:v', 'libx264', '-preset', 'medium', '-crf', '21',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-b:a', '192k',
         output_video
     ]
     subprocess.run(cmd, check=True)
-    print("✨ Full Video Anti-Copyright & Black Transition Editing Complete!")
+    print("✨ Advanced Anti-Copyright & Lip-Sync Safe Video Editing Complete!")
 
 def get_file_id_by_name(filename):
     query = f"name = '{filename}' and '{DRIVE_FOLDER_ID}' in parents and trashed = false"
@@ -123,8 +129,36 @@ def main():
         print("ℹ️ Queue خالی ہے۔")
         return
 
-    item = queue.pop(0)
-    print(f"🚀 Processing: {item['title']}")
+    # ہسٹری فائل چیک کریں (ڈپلیکیشن سے بچنے کے لیے)
+    history = []
+    history_file_id = get_file_id_by_name('processed_history.json')
+    if history_file_id:
+        download_from_drive(history_file_id, 'processed_history.json')
+        try:
+            with open('processed_history.json', 'r') as f:
+                history = json.load(f)
+        except:
+            history = []
+
+    # کیو سے ایسی ویڈیو تلاش کریں جو پہلے پروسیس نہ ہوئی ہو
+    item = None
+    while queue:
+        potential_item = queue[0]
+        if potential_item['filename'] in history:
+            print(f"⚠️ Video '{potential_item['filename']}' پہلے ہی پروسیس کی جا چکی ہے، اسے چھوڑا (Skip) جا رہا ہے۔")
+            queue.pop(0)
+        else:
+            item = queue.pop(0)
+            break
+
+    if not item:
+        print("ℹ️ پروسیس کرنے کے لیے کوئی نئی ویڈیو نہیں ملی (سب پہلے ہی اپ لوڈ ہو چکی ہیں)۔")
+        with open('queue.json', 'w') as f:
+            json.dump(queue, f, indent=4)
+        drive_service.files().update(fileId=queue_file_id, media_body=MediaFileUpload('queue.json')).execute()
+        return
+
+    print(f"🚀 Processing New Video: {item['title']}")
 
     video_id = get_file_id_by_name(item['filename'])
 
@@ -137,6 +171,7 @@ def main():
 
     youtube = get_youtube_service()
 
+    # queue.json سے ٹائٹل، ڈسکرپشن اور ٹیگز خود بخود اٹھائے جائیں گے
     body = {
         'snippet': {
             'title': item['title'],
@@ -160,13 +195,27 @@ def main():
     if 'thumbnail' in item:
         upload_thumbnail(youtube, yt_video_id, item['thumbnail'])
 
+    # گوگل ڈرائیو سے اصل ویڈیو ڈیلیٹ کریں
     delete_from_drive(video_id)
 
+    # ہسٹری میں ویڈیو کا نام شامل کریں اور گوگل ڈرائیو پر اپ ڈیٹ/کریٹ کریں
+    history.append(item['filename'])
+    with open('processed_history.json', 'w') as f:
+        json.dump(history, f, indent=4)
+
+    media_history = MediaFileUpload('processed_history.json')
+    if history_file_id:
+        drive_service.files().update(fileId=history_file_id, media_body=media_history).execute()
+    else:
+        file_metadata = {'name': 'processed_history.json', 'parents': [DRIVE_FOLDER_ID]}
+        drive_service.files().create(body=file_metadata, media_body=media_history, fields='id').execute()
+
+    # کیو (queue.json) کو اپ ڈیٹ کریں
     with open('queue.json', 'w') as f:
         json.dump(queue, f, indent=4)
 
     drive_service.files().update(fileId=queue_file_id, media_body=MediaFileUpload('queue.json')).execute()
-    print("✅ Drive سے ویڈیو ڈیلیٹ اور queue.json اپ ڈیٹ ہو گئی۔")
+    print("✅ Queue اور History کامیابی سے اپ ڈیٹ ہو گئیں۔")
 
 if __name__ == '__main__':
     main()
