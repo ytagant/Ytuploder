@@ -39,18 +39,33 @@ def download_from_drive(file_id, output_path):
 def delete_from_drive(file_id):
     drive_service.files().delete(fileId=file_id).execute()
 
-def edit_anti_copyright(input_video, output_video):
-    print("🎬 FFmpeg سے Anti-Copyright Filters اپلائی ہو رہے ہیں...")
+def edit_anti_copyright_fast_test(input_video, output_video):
+    print("🎬 FAST TEST: ویڈیو چاہے کتنی بھی لمبی ہو، صرف پہلے 2 منٹ (120s) کٹ اور ایڈٹ ہو رہے ہیں...")
     cmd = [
-        'ffmpeg', '-y', '-i', input_video,
+        'ffmpeg', '-y',
+        '-ss', '00:00:00',
+        '-t', '120',
+        '-i', input_video,
         '-vf', "hflip,eq=brightness=0.02:contrast=1.05:saturation=1.1,setpts=PTS/1.03",
         '-af', "atempo=1.03,asetrate=44100*1.02,aresample=44100",
-        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
         '-c:a', 'aac', '-b:a', '128k',
         output_video
     ]
     subprocess.run(cmd, check=True)
-    print("✨ Video Editing مکمل ہو گئی!")
+    print("✨ 2-Minute Fast Test Video Editing Complete!")
+
+def upload_thumbnail(video_id, thumbnail_filename):
+    t_query = f"name = '{thumbnail_filename}' and '{DRIVE_FOLDER_ID}' in parents and trashed = false"
+    t_results = drive_service.files().list(q=t_query, fields="files(id)").execute()
+    t_files = t_results.get('files', [])
+
+    if t_files:
+        t_id = t_files[0]['id']
+        download_from_drive(t_id, 'thumb.jpg')
+        youtube.thumbnails().set(videoId=video_id, media_body=MediaFileUpload('thumb.jpg')).execute()
+        delete_from_drive(t_id)
+        print("🖼️ Custom Thumbnail Uploaded Successfully!")
 
 def main():
     query = f"name = 'queue.json' and '{DRIVE_FOLDER_ID}' in parents and trashed = false"
@@ -68,11 +83,11 @@ def main():
         queue = json.load(f)
 
     if not queue:
-        print("ℹ️ Queue خالی ہے، کوئی ویڈیو باقی نہیں۔")
+        print("ℹ️ Queue خالی ہے، کوئی ویڈیو باقی نہیں ہے۔")
         return
 
     item = queue.pop(0)
-    print(f"🚀 پروسیسنگ شروع: {item['title']}")
+    print(f"🚀 Fast Testing Video: {item['title']}")
 
     v_query = f"name = '{item['filename']}' and '{DRIVE_FOLDER_ID}' in parents and trashed = false"
     v_results = drive_service.files().list(q=v_query, fields="files(id)").execute()
@@ -87,7 +102,7 @@ def main():
     edited_video_path = "edited_video.mp4"
 
     download_from_drive(video_id, raw_video_path)
-    edit_anti_copyright(raw_video_path, edited_video_path)
+    edit_anti_copyright_fast_test(raw_video_path, edited_video_path)
 
     body = {
         'snippet': {
@@ -105,8 +120,12 @@ def main():
     media = MediaFileUpload(edited_video_path, chunksize=-1, resumable=True)
     request = youtube.videos().insert(part=','.join(body.keys()), body=body, media_body=media)
     response = request.execute()
+    yt_video_id = response['id']
 
-    print(f"🎉 یوٹیوب پر ویڈیو کامیابی سے اپ لوڈ ہو گئی! Video ID: {response['id']}")
+    print(f"🎉 2-Min Test Video YouTube پر کامیابی سے اپ لوڈ ہو گئی! Video ID: {yt_video_id}")
+
+    if 'thumbnail' in item:
+        upload_thumbnail(yt_video_id, item['thumbnail'])
 
     delete_from_drive(video_id)
 
@@ -115,8 +134,7 @@ def main():
 
     media_queue = MediaFileUpload('queue.json')
     drive_service.files().update(fileId=queue_file_id, media_body=media_queue).execute()
-    print("✅ Drive صاف ہو گئی اور queue اپ ڈیٹ ہو گئی۔")
+    print("✅ Drive سے اصل ویڈیو ڈیلیٹ ہو گئی اور queue.json اپ ڈیٹ ہو گئی۔")
 
 if __name__ == '__main__':
     main()
-
