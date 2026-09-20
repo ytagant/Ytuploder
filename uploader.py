@@ -2,158 +2,153 @@ import os
 import json
 import subprocess
 from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+from googleapiclient.http import MediaFileUpload
 
-def get_drive_and_youtube_services():
-    token_info = os.environ.get("GOOGLE_TOKEN_JSON")
-    if token_info:
-        token_data = json.loads(token_info)
-        creds = Credentials.from_authorized_user_info(token_data)
-    elif os.path.exists('token.json'):
-        with open('token.json', 'r') as f:
-            token_data = json.load(f)
-        creds = Credentials.from_authorized_user_info(token_data)
-    else:
-        raise FileNotFoundError("Google OAuth token not found in Environment variables or local path!")
+DRIVE_FOLDER_ID = os.environ.get('DRIVE_FOLDER_ID')
+SERVICE_ACCOUNT_JSON = os.environ.get('SERVICE_ACCOUNT_JSON')
 
-    drive_service = build('drive', 'v3', credentials=creds)
-    youtube_service = build('youtube', 'v3', credentials=creds)
-    return drive_service, youtube_service
+# 1. Drive Connection Setup
+with open('service_account.json', 'w') as f:
+    f.write(SERVICE_ACCOUNT_JSON)
 
-def download_file_from_drive(drive_service, file_name, file_id):
-    request = drive_service.files().get_media(fileId=file_id)
-    with open(file_name, 'wb') as fh:
-        downloader = MediaIoBaseDownload(fh, request)
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
+creds_drive = service_account.Credentials.from_service_account_file(
+    'service_account.json', scopes=['https://www.googleapis.com/auth/drive']
+)
+drive_service = build('drive', 'v3', credentials=creds_drive)
 
-def safe_delete_from_drive(drive_service, file_id):
+def download_from_drive(file_id, output_path):
+    print(f"📥 Downloading file {output_path} from Drive...")
     try:
-        drive_service.files().delete(fileId=file_id).execute()
-        print(f"🗑️ Drive file {file_id} deleted successfully.")
+        request = drive_service.files().get_media(fileId=file_id)
+        with open(output_path, 'wb') as f:
+            f.write(request.execute())
     except Exception as e:
-        print(f"⚠️ Drive deletion warning: {e}")
+        print(f"⚠️ Standard download failed, trying export for {output_path}...")
+        request = drive_service.files().export_media(fileId=file_id, mimeType='text/plain')
+        with open(output_path, 'wb') as f:
+            f.write(request.execute())
+    print("✅ Download Complete!")
 
-def process_video_with_pro_editing(input_file, output_file):
-    print(f"🎬 Starting Professional Video Processing on: {input_file}")
-    duration_cmd = [
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", input_file
+def delete_from_drive(file_id):
+    drive_service.files().delete(fileId=file_id).execute()
+
+def edit_anti_copyright_full_video(input_video, output_video):
+    print("🎬 FULL VIDEO PROCESSING: پوری ویڈیو پر اینٹی کاپی رائট ایڈیٹنگ اور ہر چند سیکنڈ بعد بلیک کٹ ٹرانزिशन لگایا جا رہا ہے...")
+    
+    # یہاں پر ویڈیو فلٹر میں hflip, کلر ایڈجسٹمنٹ کے ساتھ ساتھ
+    # 'mpdecimate' یا کسٹم ایکسپریشن کے ذریعے ہر چند سیکنڈ بعد 0.01 سیکنڈ کا بلیک کٹ ٹرانزिशन شامل کیا گیا ہے
+    video_filter = (
+        "hflip,"
+        "eq=brightness=0.02:contrast=1.05:saturation=1.1,"
+        "setpts=PTS/1.03,"
+        "fade=t=in:st=0:d=0.1,"
+        # ہر 10 سیکنڈ کے بعد 0.01 سیکنڈ کا بلیک فلیش/کٹ ٹرانزिशन
+        "expr=if(lt(mod(t,10),0.01),0,val)"
+    )
+
+    cmd = [
+        'ffmpeg', '-y',
+        '-i', input_video,
+        '-vf', video_filter,
+        '-af', "atempo=1.03,asetrate=44100*1.02,aresample=44100",
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+        '-c:a', 'aac', '-b:a', '128k',
+        output_video
     ]
-    try:
-        duration = float(subprocess.check_output(duration_cmd).decode('utf-8').strip())
-        fade_out_start = max(0, duration - 0.1)
-    except Exception as e:
-        print(f"⚠️ Duration check fallback ({e}).")
-        fade_out_start = 119.9
+    subprocess.run(cmd, check=True)
+    print("✨ Full Video Anti-Copyright & Black Transition Editing Complete!")
 
-    ffmpeg_cmd = [
-        "ffmpeg", "-y", "-i", input_file,
-        "-vf", (
-            f"hflip,"
-            f"eq=brightness=0.02:contrast=1.05:saturation=1.1,"
-            f"fade=t=in:st=0:d=0.1,"
-            f"fade=t=out:st={fade_out_start:.2f}:d=0.1"
-        ),
-        "-af", "volume=1.2,loudnorm=I=-14:LRA=11:TP=-1.5",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "22", "-c:a", "aac",
-        output_file
-    ]
-    result = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if result.returncode != 0:
-        print(f"❌ FFmpeg Error: {result.stderr.decode('utf-8')}")
-        raise RuntimeError("Video processing failed.")
-    print("✨ Professional Video Editing Completed!")
+def get_file_id_by_name(filename):
+    query = f"name = '{filename}' and '{DRIVE_FOLDER_ID}' in parents and trashed = false"
+    results = drive_service.files().list(q=query, fields="files(id)").execute()
+    files = results.get('files', [])
+    if files:
+        return files[0]['id']
+    return None
 
-def load_metadata_from_queue(queue_filename):
-    title = "Manhwa Recap Video"
-    description = "Automated Manhwa/Anime recap video upload."
-    tags = ["anime", "manhwa", "recap"]
+def get_youtube_service():
+    print("🔑 Google Drive سے client_secret.json और token.json ڈاؤن لوڈ ہو رہے हैं...")
+    
+    cs_id = get_file_id_by_name('client_secret.json')
+    tk_id = get_file_id_by_name('token.json')
+    
+    if not cs_id or not tk_id:
+        raise Exception("❌ Google Drive میں client_secret.json یا token.json نہیں ملی!")
 
-    if os.path.exists(queue_filename):
-        try:
-            with open(queue_filename, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                data = json.loads(content)
-                if isinstance(data, list) and len(data) > 0:
-                    item = data[0]
-                    title = item.get('title', title)
-                    description = item.get('description', description)
-                    tags = item.get('tags', tags)
-                elif isinstance(data, dict):
-                    title = data.get('title', title)
-                    description = data.get('description', description)
-                    tags = data.get('tags', tags)
-                print("📝 Successfully loaded Title, Description & Tags from queue.json!")
-        except Exception as e:
-            print(f"⚠️ queue.json parse warning: {e}")
-    return title, description, tags
+    download_from_drive(cs_id, 'client_secret.json')
+    download_from_drive(tk_id, 'token.json')
+
+    with open('client_secret.json', 'r') as f:
+        client_secret_data = json.load(f)
+    
+    with open('token.json', 'r') as f:
+        token_data = json.load(f)
+
+    client_info = client_secret_data.get('web') or client_secret_data.get('installed')
+
+    creds_yt = Credentials(
+        token=token_data.get('token'),
+        refresh_token=token_data.get('refresh_token'),
+        token_uri=client_info['token_uri'],
+        client_id=client_info['client_id'],
+        client_secret=client_info['client_secret'],
+        scopes=token_data.get('scopes')
+    )
+    creds_yt.refresh(Request())
+    print("✅ YouTube API Successfully Connected!")
+    return build('youtube', 'v3', credentials=creds_yt)
+
+def upload_thumbnail(youtube, video_id, thumbnail_filename):
+    t_id = get_file_id_by_name(thumbnail_filename)
+    if t_id:
+        download_from_drive(t_id, 'thumb.jpg')
+        youtube.thumbnails().set(videoId=video_id, media_body=MediaFileUpload('thumb.jpg')).execute()
+        delete_from_drive(t_id)
+        print("🖼️ Custom Thumbnail Uploaded Successfully!")
 
 def main():
-    drive_service, youtube_service = get_drive_and_youtube_services()
-    folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID")
-    
-    print("📥 Scanning Google Drive folder...")
-    if folder_id:
-        query = f"'{folder_id}' in parents and trashed = false"
-    else:
-        query = "trashed = false"
+    queue_file_id = get_file_id_by_name('queue.json')
 
-    results = drive_service.files().list(
-        q=query,
-        pageSize=50, 
-        fields="nextPageToken, files(id, name)"
-    ).execute()
-    items = results.get('files', [])
-
-    raw_video_item = None
-    thumbnail_item = None
-    queue_item = None
-    base_name = None
-
-    for item in items:
-        name = item['name']
-        if name.endswith('.mp4') and not name.startswith('processed_'):
-            raw_video_item = item
-            base_name = os.path.splitext(name)[0].strip()
-            break
-
-    if not raw_video_item:
-        print("❌ No video file (.mp4) found in the Google Drive folder to process.")
+    if not queue_file_id:
+        print("ℹ️ Google Drive میں queue.json نہیں ملی۔")
         return
 
-    print(f"📥 Downloading raw video: {raw_video_item['name']}...")
-    download_file_from_drive(drive_service, raw_video_item['name'], raw_video_item['id'])
+    download_from_drive(queue_file_id, 'queue.json')
 
-    for item in items:
-        name = item['name']
-        if name == 'queue.json':
-            queue_item = item
-        elif base_name and base_name in os.path.splitext(name)[0]:
-            if name.endswith(('.jpg', '.png', '.jpeg', '.webp')):
-                thumbnail_item = item
+    with open('queue.json', 'r') as f:
+        queue = json.load(f)
 
-    if thumbnail_item:
-        print(f"🖼️ Downloading matching thumbnail: {thumbnail_item['name']}...")
-        download_file_from_drive(drive_service, thumbnail_item['name'], thumbnail_item['id'])
+    if not queue:
+        print("ℹ️ Queue خالی ہے۔")
+        return
 
-    if queue_item:
-        print("📝 Downloading queue.json...")
-        download_file_from_drive(drive_service, 'queue.json', queue_item['id'])
+    item = queue.pop(0)
+    print(f"🚀 Processing: {item['title']}")
 
-    processed_video = f"processed_{raw_video_item['name']}"
-    process_video_with_pro_editing(raw_video_item['name'], processed_video)
+    video_id = get_file_id_by_name(item['filename'])
 
-    title, description, tags = load_metadata_from_queue('queue.json')
+    if not video_id:
+        print(f"❌ Video file {item['filename']} Drive پر نہیں ملی۔")
+        return
 
-    print("✅ YouTube API Connected Successfully!")
+    # 1. Drive سے پوری ویڈیو ڈاؤن لوڈ کریں
+    download_from_drive(video_id, 'raw_video.mp4')
+    
+    # 2. پوری ویڈیو کی اینٹی کاپی رائٹ اور ٹرانزिशन ایڈیٹنگ کریں
+    edit_anti_copyright_full_video('raw_video.mp4', 'edited_video.mp4')
+
+    # 3. Drive کی فائلوں سے YouTube کنکشن بنائیں
+    youtube = get_youtube_service()
+
+    # 4. پوری ایڈیٹ شدہ ویڈیو اپ لوڈ کریں
     body = {
         'snippet': {
-            'title': title,
-            'description': description,
-            'tags': tags,
+            'title': item['title'],
+            'description': item['description'],
+            'tags': item.get('tags', []),
             'categoryId': '24'
         },
         'status': {
@@ -162,32 +157,24 @@ def main():
         }
     }
 
-    media = MediaFileUpload(processed_video, chunksize=-1, resumable=True)
-    request = youtube_service.videos().insert(part=','.join(body.keys()), body=body, media_body=media)
+    media = MediaFileUpload('edited_video.mp4', chunksize=-1, resumable=True)
+    request = youtube.videos().insert(part=','.join(body.keys()), body=body, media_body=media)
+    response = request.execute()
+    yt_video_id = response['id']
 
-    response = None
-    while response is None:
-        status, response = request.next_chunk()
-        if status:
-            print(f"🚀 Uploading progress: {int(status.progress() * 100)}%")
+    print(f"🎉 Full Video YouTube پر کامیابی سے اپ لوڈ ہو گئی! Video ID: {yt_video_id}")
 
-    video_id = response['id']
-    print(f"🎉 Video Uploaded Successfully! Video ID: {video_id}")
+    if 'thumbnail' in item:
+        upload_thumbnail(youtube, yt_video_id, item['thumbnail'])
 
-    thumbnail_filename = thumbnail_item['name'] if thumbnail_item else None
-    if thumbnail_filename and os.path.exists(thumbnail_filename):
-        try:
-            print(f"🖼️ Uploading Thumbnail: {thumbnail_filename}...")
-            youtube_service.thumbnails().set(
-                videoId=video_id,
-                media_body=MediaFileUpload(thumbnail_filename)
-            ).execute()
-            print("✅ Custom Thumbnail Uploaded Successfully!")
-        except Exception as e:
-            print(f"⚠️ Custom Thumbnail Upload Warning: {e}")
+    delete_from_drive(video_id)
 
-    safe_delete_from_drive(drive_service, raw_video_item['id'])
+    with open('queue.json', 'w') as f:
+        json.dump(queue, f, indent=4)
+
+    drive_service.files().update(fileId=queue_file_id, media_body=MediaFileUpload('queue.json')).execute()
+    print("✅ Drive سے ویڈیو ڈیلیٹ اور queue.json اپ ڈیٹ ہو گئی۔")
 
 if __name__ == '__main__':
     main()
-        
+    
