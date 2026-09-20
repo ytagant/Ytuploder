@@ -1,4 +1,3 @@
-rm -f uploader.py && cat << 'EOF' > uploader.py
 import os
 import json
 import subprocess
@@ -7,8 +6,6 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
 def get_drive_and_youtube_services():
-    """GitHub Secrets یا انوائرنमेंट ویری ایبل سے ٹوکن لے کر ڈرائیو اور یوٹیوب سروس بنانا"""
-    # اگر ٹوکن یا کلائنٹ سیک্রেট env میں محفوظ ہیں تو وہاں سے لوڈ کریں
     token_info = os.environ.get("GOOGLE_TOKEN_JSON")
     if token_info:
         token_data = json.loads(token_info)
@@ -96,8 +93,6 @@ def load_metadata_from_queue(queue_filename):
 
 def main():
     drive_service, youtube_service = get_drive_and_youtube_services()
-
-    # GitHub Secrets سے Google Drive Folder ID حاصل کرنا (اگر موجود ہو)
     folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID")
     
     print("📥 Scanning Google Drive folder...")
@@ -195,6 +190,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-EOF
-
-git add uploader.py && git commit -m "Update uploader to target Google Drive folder via ID from secrets" && git push origin main
+        
