@@ -1,4 +1,3 @@
-mkdir -p .github/workflows && cat << 'EOF' > .github/workflows/upload.yml
 name: Automated Video Processor & YouTube Uploader
 
 on:
@@ -32,6 +31,4 @@ jobs:
       - name: Run Video Processor & YouTube Uploader
         run: |
           python uploader.py
-EOF
-
-git add .github/workflows/upload.yml && git commit -m "Fix workflow syntax for run button" && git push origin main
+          
