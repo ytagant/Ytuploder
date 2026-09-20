@@ -127,6 +127,7 @@ def main():
         print("ℹ️ Queue خالی ہے۔")
         return
 
+    # ہسٹری فائل لوڈ کریں
     history = []
     history_file_id = get_file_id_by_name('processed_history.json')
     if history_file_id:
@@ -137,30 +138,50 @@ def main():
         except:
             history = []
 
+    # اسمارٹ لوپ: جو ویڈیو ہسٹری میں ہو یا گوگل ڈرائیو پر موجود نہ ہو، اسے خود بخود چھوڑ کر آگے بڑھ جائے
     item = None
     while queue:
         potential_item = queue[0]
-        if potential_item['filename'] in history:
-            print(f"⚠️ Video '{potential_item['filename']}' پہلے ہی پروسیس کی جا چکی ہے، اسے چھوڑا (Skip) جا رہا ہے۔")
+        filename = potential_item['filename']
+        
+        # چیک کریں کہ آیا ویڈیو پہلے پروسیس ہو چکی ہے یا ڈرائیو سے غائب (ڈیلیٹ) ہو چکی ہے
+        video_id = get_file_id_by_name(filename)
+        
+        if filename in history or not video_id:
+            if filename in history:
+                print(f"⚠️ Video '{filename}' پہلے ہی ہسٹری میں موجود ہے، اسکিপ کی جا رہی ہے۔")
+            else:
+                print(f"⚠️ Video '{filename}' گوگل ڈرائیو پر نہیں ملی (शायद डिलीट ہو چکی ہے)، اسے خود بخود ہسٹری میں ڈال کر اسکিপ کیا جا रहा ہے۔")
+                if filename not in history:
+                    history.append(filename)
+            
+            # کیو سے ہٹا دیں
             queue.pop(0)
         else:
             item = queue.pop(0)
             break
 
+    # ہسٹری اور کیو کو اپ ڈیٹ کر دیں تاکہ اگلی بار یہ رُکے نہیں
+    with open('processed_history.json', 'w') as f:
+        json.dump(history, f, indent=4)
+
+    media_history = MediaFileUpload('processed_history.json')
+    if history_file_id:
+        drive_service.files().update(fileId=history_file_id, media_body=media_history).execute()
+    else:
+        file_metadata = {'name': 'processed_history.json', 'parents': [DRIVE_FOLDER_ID]}
+        drive_service.files().create(body=file_metadata, media_body=media_history, fields='id').execute()
+
+    with open('queue.json', 'w') as f:
+        json.dump(queue, f, indent=4)
+    drive_service.files().update(fileId=queue_file_id, media_body=MediaFileUpload('queue.json')).execute()
+
     if not item:
-        print("ℹ️ پروسیس کرنے کے لیے کوئی نئی ویڈیو نہیں ملی (سب پہلے ہی اپ لوڈ ہو چکی ہیں)۔")
-        with open('queue.json', 'w') as f:
-            json.dump(queue, f, indent=4)
-        drive_service.files().update(fileId=queue_file_id, media_body=MediaFileUpload('queue.json')).execute()
+        print("ℹ️ پروسیس کرنے کے لیے کوئی نئی ویڈیو نہیں ملی (سبھی ویڈیوز یا تو پروسیس ہو چکی ہیں یا ڈرائیو سے غائب ہیں)۔")
         return
 
     print(f"🚀 Processing New Video: {item['title']}")
-
     video_id = get_file_id_by_name(item['filename'])
-
-    if not video_id:
-        print(f"❌ Video file {item['filename']} Drive پر نہیں ملی۔")
-        return
 
     download_from_drive(video_id, 'raw_video.mp4')
     edit_anti_copyright_full_video('raw_video.mp4', 'edited_video.mp4')
@@ -192,20 +213,19 @@ def main():
 
     delete_from_drive(video_id)
 
-    history.append(item['filename'])
+    # ہسٹری میں کامیابی کے ساتھ دوبارہ نام شامل کریں
+    if item['filename'] not in history:
+        history.append(item['filename'])
+
     with open('processed_history.json', 'w') as f:
         json.dump(history, f, indent=4)
 
     media_history = MediaFileUpload('processed_history.json')
-    if history_file_id:
-        drive_service.files().update(fileId=history_file_id, media_body=media_history).execute()
-    else:
-        file_metadata = {'name': 'processed_history.json', 'parents': [DRIVE_FOLDER_ID]}
-        drive_service.files().create(body=file_metadata, media_body=media_history, fields='id').execute()
+    drive_service.files().update(fileId=history_file_id or get_file_id_by_name('processed_history.json'), media_body=media_history).execute()
 
+    # کیو (queue.json) کو دوبارہ اپ ڈیٹ کریں
     with open('queue.json', 'w') as f:
         json.dump(queue, f, indent=4)
-
     drive_service.files().update(fileId=queue_file_id, media_body=MediaFileUpload('queue.json')).execute()
     print("✅ Queue اور History کامیابی سے اپ ڈیٹ ہو گئیں۔")
 
