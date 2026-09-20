@@ -9,8 +9,6 @@ from googleapiclient.http import MediaFileUpload
 
 DRIVE_FOLDER_ID = os.environ.get('DRIVE_FOLDER_ID')
 SERVICE_ACCOUNT_JSON = os.environ.get('SERVICE_ACCOUNT_JSON')
-YOUTUBE_CLIENT_SECRET_JSON = os.environ.get('YOUTUBE_CLIENT_SECRET_JSON')
-YOUTUBE_TOKEN_JSON = os.environ.get('YOUTUBE_TOKEN_JSON')
 
 # 1. Drive Connection Setup
 with open('service_account.json', 'w') as f:
@@ -22,7 +20,7 @@ creds_drive = service_account.Credentials.from_service_account_file(
 drive_service = build('drive', 'v3', credentials=creds_drive)
 
 def download_from_drive(file_id, output_path):
-    print(f"📥 Downloading file from Drive...")
+    print(f"📥 Downloading file {output_path} from Drive...")
     request = drive_service.files().get_media(fileId=file_id)
     with open(output_path, 'wb') as f:
         f.write(request.execute())
@@ -32,7 +30,7 @@ def delete_from_drive(file_id):
     drive_service.files().delete(fileId=file_id).execute()
 
 def edit_anti_copyright_fast_test(input_video, output_video):
-    print("🎬 FAST TEST: بڑی ویڈیو میں سے صرف پہلے 2 منٹ (120s) کٹ اور ایڈٹ ہو رہے ہیں...")
+    print("🎬 FAST TEST: बड़ी वीडियो में से सिर्फ पहले 2 मिनट (120s) कट और एडिट हो रहे हैं...")
     cmd = [
         'ffmpeg', '-y',
         '-ss', '00:00:00',
@@ -47,22 +45,31 @@ def edit_anti_copyright_fast_test(input_video, output_video):
     subprocess.run(cmd, check=True)
     print("✨ 2-Minute Fast Test Video Editing Complete!")
 
-def upload_thumbnail(youtube, video_id, thumbnail_filename):
-    t_query = f"name = '{thumbnail_filename}' and '{DRIVE_FOLDER_ID}' in parents and trashed = false"
-    t_results = drive_service.files().list(q=t_query, fields="files(id)").execute()
-    t_files = t_results.get('files', [])
-
-    if t_files:
-        t_id = t_files[0]['id']
-        download_from_drive(t_id, 'thumb.jpg')
-        youtube.thumbnails().set(videoId=video_id, media_body=MediaFileUpload('thumb.jpg')).execute()
-        delete_from_drive(t_id)
-        print("🖼️ Custom Thumbnail Uploaded Successfully!")
+def get_file_id_by_name(filename):
+    query = f"name = '{filename}' and '{DRIVE_FOLDER_ID}' in parents and trashed = false"
+    results = drive_service.files().list(q=query, fields="files(id)").execute()
+    files = results.get('files', [])
+    if files:
+        return files[0]['id']
+    return None
 
 def get_youtube_service():
-    print("🔑 Connecting to YouTube API...")
-    client_secret_data = json.loads(YOUTUBE_CLIENT_SECRET_JSON)
-    token_data = json.loads(YOUTUBE_TOKEN_JSON)
+    print("🔑 Google Drive से client_secret.json और token.json डाउनलोड हो रहे हैं...")
+    
+    cs_id = get_file_id_by_name('client_secret.json')
+    tk_id = get_file_id_by_name('token.json')
+    
+    if not cs_id or not tk_id:
+        raise Exception("❌ Google Drive में client_secret.json या token.json नहीं मिली!")
+
+    download_from_drive(cs_id, 'client_secret.json')
+    download_from_drive(tk_id, 'token.json')
+
+    with open('client_secret.json', 'r') as f:
+        client_secret_data = json.load(f)
+    
+    with open('token.json', 'r') as f:
+        token_data = json.load(f)
 
     client_info = client_secret_data.get('web') or client_secret_data.get('installed')
 
@@ -75,50 +82,52 @@ def get_youtube_service():
         scopes=token_data.get('scopes')
     )
     creds_yt.refresh(Request())
+    print("✅ YouTube API Successfully Connected!")
     return build('youtube', 'v3', credentials=creds_yt)
 
-def main():
-    query = f"name = 'queue.json' and '{DRIVE_FOLDER_ID}' in parents and trashed = false"
-    results = drive_service.files().list(q=query, fields="files(id)").execute()
-    files = results.get('files', [])
+def upload_thumbnail(youtube, video_id, thumbnail_filename):
+    t_id = get_file_id_by_name(thumbnail_filename)
+    if t_id:
+        download_from_drive(t_id, 'thumb.jpg')
+        youtube.thumbnails().set(videoId=video_id, media_body=MediaFileUpload('thumb.jpg')).execute()
+        delete_from_drive(t_id)
+        print("🖼️ Custom Thumbnail Uploaded Successfully!")
 
-    if not files:
-        print("ℹ️ Google Drive میں queue.json نہیں ملی۔")
+def main():
+    queue_file_id = get_file_id_by_name('queue.json')
+
+    if not queue_file_id:
+        print("ℹ️ Google Drive में queue.json नहीं मिली।")
         return
 
-    queue_file_id = files[0]['id']
     download_from_drive(queue_file_id, 'queue.json')
 
     with open('queue.json', 'r') as f:
         queue = json.load(f)
 
     if not queue:
-        print("ℹ️ Queue خالی ہے۔")
+        print("ℹ️ Queue खाली है।")
         return
 
     item = queue.pop(0)
     print(f"🚀 Processing: {item['title']}")
 
-    v_query = f"name = '{item['filename']}' and '{DRIVE_FOLDER_ID}' in parents and trashed = false"
-    v_results = drive_service.files().list(q=v_query, fields="files(id)").execute()
-    v_files = v_results.get('files', [])
+    video_id = get_file_id_by_name(item['filename'])
 
-    if not v_files:
-        print(f"❌ Video file {item['filename']} Drive پر نہیں ملی۔")
+    if not video_id:
+        print(f"❌ Video file {item['filename']} Drive पर नहीं मिली।")
         return
 
-    video_id = v_files[0]['id']
-    
-    # 1. Drive سے ویڈیو ڈاؤن لوڈ کریں
+    # 1. Drive से वीडियो डाउनलोड करें
     download_from_drive(video_id, 'raw_video.mp4')
     
-    # 2. صرف پہلے 2 منٹ کی فاسٹ ایڈٹنگ کریں
+    # 2. सिर्फ पहले 2 मिनट की फास्ट एडिटिंग करें
     edit_anti_copyright_fast_test('raw_video.mp4', 'edited_video.mp4')
 
-    # 3. یوٹیوب کنکشن بنائیں
+    # 3. Drive की फाइलों से YouTube कनेक्शन बनाएं
     youtube = get_youtube_service()
 
-    # 4. 2 منٹ کی ویڈیو اپ لوڈ کریں
+    # 4. 2 मिनट की वीडियो अपलोड करें
     body = {
         'snippet': {
             'title': item['title'],
@@ -137,7 +146,7 @@ def main():
     response = request.execute()
     yt_video_id = response['id']
 
-    print(f"🎉 2-Min Test Video YouTube پر کامیابی سے اپ لوڈ ہو گئی! Video ID: {yt_video_id}")
+    print(f"🎉 2-Min Test Video YouTube पर सफलता से अपलोड हो गई! Video ID: {yt_video_id}")
 
     if 'thumbnail' in item:
         upload_thumbnail(youtube, yt_video_id, item['thumbnail'])
@@ -148,7 +157,7 @@ def main():
         json.dump(queue, f, indent=4)
 
     drive_service.files().update(fileId=queue_file_id, media_body=MediaFileUpload('queue.json')).execute()
-    print("✅ Drive سے ویڈیو ڈیلیٹ اور queue.json اپ ڈیٹ ہو گئی۔")
+    print("✅ Drive से वीडियो डिलीट और queue.json अपडेट हो गई।")
 
 if __name__ == '__main__':
     main()
