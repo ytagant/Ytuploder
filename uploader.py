@@ -1,6 +1,7 @@
 import os
 import json
 import subprocess
+import time
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account
@@ -38,7 +39,7 @@ def delete_from_drive(file_id):
         print(f"⚠️ Could not delete file from Drive: {e}")
 
 def edit_anti_copyright_full_video(input_video, output_video):
-    print("🎬 FULL VIDEO PROCESSING: ایڈوانسڈ فلٹرز کے ساتھ ایڈیٹنگ جاری ہے...")
+    print("🎬 FULL VIDEO PROCESSING: एडवांस्ड फिल्टर्स के साथ एडिटिंग जारी है...")
     
     video_filter = (
         "crop=iw-2:ih-2:1:1,scale=iw:ih,"
@@ -70,7 +71,6 @@ def get_file_id_by_name(filename):
     if files:
         return files[0]['id']
     else:
-        # डिबगिंग लॉजिक: अगर फाइल नहीं मिलेगी तो फोल्डर की सारी फाइलें प्रिंट करेगा
         print(f"⚠️ '{filename}' ड्राइव पर नहीं मिली!")
         print("📂 इस फोल्डर में मौजूद फाइलें ये हैं (ताकि आप नाम मैच कर सकें):")
         all_files_query = f"'{DRIVE_FOLDER_ID}' in parents and trashed = false"
@@ -80,13 +80,13 @@ def get_file_id_by_name(filename):
         return None
 
 def get_youtube_service():
-    print("🔑 Google Drive سے client_secret.json اور token.json ڈاؤن لوڈ ہو رہے ہیں...")
+    print("🔑 Google Drive से client_secret.json और token.json डाउनलोड हो रहे हैं...")
     
     cs_id = get_file_id_by_name('client_secret.json')
     tk_id = get_file_id_by_name('token.json')
     
     if not cs_id or not tk_id:
-        raise Exception("❌ Google Drive میں client_secret.json یا token.json نہیں ملی!")
+        raise Exception("❌ Google Drive में client_secret.json या token.json नहीं मिली!")
 
     download_from_drive(cs_id, 'client_secret.json')
     download_from_drive(tk_id, 'token.json')
@@ -107,9 +107,18 @@ def get_youtube_service():
         client_secret=client_info['client_secret'],
         scopes=token_data.get('scopes')
     )
-    creds_yt.refresh(Request())
-    print("✅ YouTube API Successfully Connected!")
-    return build('youtube', 'v3', credentials=creds_yt)
+    
+    # 🔁 नेटवर्क एरर से बचने के लिए Retry Logic (नया अपडेट)
+    for attempt in range(3):
+        try:
+            creds_yt.refresh(Request())
+            print("✅ YouTube API Successfully Connected!")
+            return build('youtube', 'v3', credentials=creds_yt)
+        except Exception as e:
+            print(f"⚠️ कनेक्शन कोशिश {attempt + 1} विफल: {e}")
+            if attempt == 2:
+                raise e
+            time.sleep(5) # 5 सेकंड रुककर दोबारा ट्राई करेगा
 
 def upload_thumbnail(youtube, video_id, thumbnail_filename):
     print(f"🖼️ थंबनेल '{thumbnail_filename}' ड्राइव पर ढूँढा जा रहा है...")
@@ -123,31 +132,29 @@ def upload_thumbnail(youtube, video_id, thumbnail_filename):
     
     print("📤 यूट्यूब पर थंबनेल अपलोड किया जा रहा है...")
     try:
-        # mimetype='image/jpeg' देना ज़रूरी होता है ताकि API कंफ्यूज न हो
         media = MediaFileUpload('thumb.jpg', mimetype='image/jpeg')
         youtube.thumbnails().set(videoId=video_id, media_body=media).execute()
         
         print("✅ कस्टम थंबनेल सफलतापूर्वक अपलोड हो गया!")
-        delete_from_drive(t_id) # अपलोड सक्सेसफुल होने के बाद ही ट्रैश में भेजेगा
+        delete_from_drive(t_id) 
         
     except Exception as e:
         print(f"❌ थंबनेल अपलोड फेल हो गया। वजह: {e}")
-        print("💡 टिप: अगर एरर 'Permission Denied' या 'Forbidden' है, तो आपका यूट्यूब चैनल कस्टम थंबनेल के लिए फोन नंबर से वेरिफाइड नहीं है।")
 
 def main():
     queue_file_id = get_file_id_by_name('queue.json')
 
     if not queue_file_id:
-        print("ℹ️ Google Drive میں queue.json نہیں ملی۔")
+        print("ℹ️ Google Drive में queue.json नहीं मिली।")
         return
 
     download_from_drive(queue_file_id, 'queue.json')
 
-    with open('queue.json', 'r') as f:
+    with open('queue.json', 'r', encoding='utf-8') as f:
         queue = json.load(f)
 
     if not queue:
-        print("ℹ️ Queue خالی ہے۔")
+        print("ℹ️ Queue खाली है।")
         return
 
     history = []
@@ -155,7 +162,7 @@ def main():
     if history_file_id:
         download_from_drive(history_file_id, 'processed_history.json')
         try:
-            with open('processed_history.json', 'r') as f:
+            with open('processed_history.json', 'r', encoding='utf-8') as f:
                 history = json.load(f)
         except:
             history = []
@@ -166,24 +173,24 @@ def main():
         filename = potential_item['filename']
         
         if filename in history:
-            print(f"⚠️ Video '{filename}' پہلے ہی ہسٹری میں موجود ہے، اسے اسکিপ کیا جا رہا ہے۔")
+            print(f"⚠️ Video '{filename}' पहले ही हिस्ट्री में मौजूद है, इसे स्किप किया जा रहा है।")
             queue.pop(0)
         else:
             video_id = get_file_id_by_name(filename)
             if not video_id:
-                print(f"⚠️ Video '{filename}' گوگل ڈرائیو پر نہیں ملی، اسے ہسٹری میں ڈال کر اسکিপ کیا جا رہا ہے۔")
+                print(f"⚠️ Video '{filename}' ड्राइव पर नहीं मिली, इसे हिस्ट्री में डालकर स्किप किया जा रहा है।")
                 history.append(filename)
                 queue.pop(0)
             else:
                 item = queue.pop(0)
                 break
 
-    with open('queue.json', 'w') as f:
+    with open('queue.json', 'w', encoding='utf-8') as f:
         json.dump(queue, f, indent=4)
     drive_service.files().update(fileId=queue_file_id, media_body=MediaFileUpload('queue.json')).execute()
 
     if not item:
-        print("ℹ️ پروسیس کرنے کے لیے کوئی نئی ویڈیو نہیں ملی۔")
+        print("ℹ️ प्रोसेस करने के लिए कोई नई वीडियो नहीं मिली।")
         return
 
     print(f"🚀 Processing New Video: {item['title']}")
@@ -210,44 +217,55 @@ def main():
     try:
         media = MediaFileUpload('edited_video.mp4', chunksize=-1, resumable=True)
         request = youtube.videos().insert(part=','.join(body.keys()), body=body, media_body=media)
-        response = request.execute()
-        yt_video_id = response['id']
-        print(f"🎉 Full Video YouTube پر کامیابی سے اپ لوڈ ہو گئی! Video ID: {yt_video_id}")
         
-        # अगर queue.json में थंबनेल का जिक्र है, तो नया थंबनेल फंक्शन कॉल होगा
-        if 'thumbnail' in item:
-            upload_thumbnail(youtube, yt_video_id, item['thumbnail'])
+        # 🔁 वीडियो अपलोडिंग के दौरान भी नेटवर्क एरर से बचने के लिए Retry Logic
+        response = None
+        for attempt in range(3):
+            try:
+                response = request.execute()
+                break
+            except Exception as e:
+                print(f"⚠️ वीडियो अपलोड कोशिश {attempt + 1} विफल: {e}")
+                if attempt == 2:
+                    raise e
+                time.sleep(5)
+                
+        if response:
+            yt_video_id = response['id']
+            print(f"🎉 Full Video YouTube पर कामयाबी से अपलोड हो गई! Video ID: {yt_video_id}")
+            
+            if 'thumbnail' in item:
+                upload_thumbnail(youtube, yt_video_id, item['thumbnail'])
 
-        # वीडियो अपलोड के बाद ड्राइव से डिलीट (ट्रैश) करें
-        delete_from_drive(video_id)
+            delete_from_drive(video_id)
 
-        if item['filename'] not in history:
-            history.append(item['filename'])
+            if item['filename'] not in history:
+                history.append(item['filename'])
 
-        with open('processed_history.json', 'w') as f:
-            json.dump(history, f, indent=4)
+            with open('processed_history.json', 'w', encoding='utf-8') as f:
+                json.dump(history, f, indent=4)
 
-        media_history = MediaFileUpload('processed_history.json')
-        if history_file_id:
-            drive_service.files().update(fileId=history_file_id, media_body=media_history).execute()
-        else:
-            file_metadata = {'name': 'processed_history.json', 'parents': [DRIVE_FOLDER_ID]}
-            drive_service.files().create(body=file_metadata, media_body=media_history, fields='id').execute()
+            media_history = MediaFileUpload('processed_history.json')
+            if history_file_id:
+                drive_service.files().update(fileId=history_file_id, media_body=media_history).execute()
+            else:
+                file_metadata = {'name': 'processed_history.json', 'parents': [DRIVE_FOLDER_ID]}
+                drive_service.files().create(body=file_metadata, media_body=media_history, fields='id').execute()
 
-        print("✅ ہسٹری اور کیو کامیابی سے اپ ڈیٹ ہو گئیں!")
+            print("✅ हिस्ट्री और क्यू कामयाबी से अपडेट हो गईं!")
         
     except Exception as e:
-        print(f"❌ YouTube Upload Failed (हो सकता है API Quota खत्म हो गया हो या एरर हो): {e}")
+        print(f"❌ YouTube Upload Failed: {e}")
 
-    # === Local Cleanup (सर्वर का स्पेस बचाने के लिए) ===
-    print("🧹 लोकल फाइल्स को क्लीन किया जा रहा ہے...")
+    # === Local Cleanup ===
+    print("🧹 लोकल फाइल्स को क्लीन किया जा रहा है...")
     files_to_delete = ['raw_video.mp4', 'edited_video.mp4', 'thumb.jpg', 'client_secret.json', 'token.json']
     for file in files_to_delete:
         if os.path.exists(file):
             os.remove(file)
-            print(f"🗑️ {file} लोकल सर्वर سے ڈیلیٹ کر دی گئی۔")
+            print(f"🗑️ {file} लोकल सर्वर से डिलीट कर दी गई।")
 
 if __name__ == '__main__':
     main()
-                                   
+
     
