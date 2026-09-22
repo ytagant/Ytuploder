@@ -45,7 +45,7 @@ def delete_from_drive(file_id):
             time.sleep(10)
 
 def edit_anti_copyright_full_video(input_video, output_video):
-    print("🎬 TESTING MODE: सिर्फ शुरुआत के 5 मिनट का क्लिप प्रोसेस हो रहा है...")
+    print("🎬 FULL VIDEO PROCESSING: एडवांस्ड फिल्टर्स के साथ पूरी वीडियो की एडिटिंग जारी है...")
     video_filter = (
         "crop=iw-2:ih-2:1:1,scale=iw:ih,"
         "eq=brightness=0.01:contrast=1.04:saturation=1.08,"
@@ -56,7 +56,6 @@ def edit_anti_copyright_full_video(input_video, output_video):
     cmd = [
         'ffmpeg', '-y',
         '-i', input_video,
-        '-t', '00:05:00',  # ⏱️ सिर्फ 5 मिनट कट करने की कमांड
         '-vf', video_filter,
         '-af', "loudnorm=I=-16:TP=-1.5:LRA=11",
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
@@ -65,7 +64,7 @@ def edit_anti_copyright_full_video(input_video, output_video):
         output_video
     ]
     subprocess.run(cmd, check=True)
-    print("✨ 5 Minute Clip Editing Complete!")
+    print("✨ Full Video Anti-Copyright Editing Complete!")
 
 def get_file_id_by_name(filename):
     print(f"🔍 ढूँढ रहे हैं: '{filename}'")
@@ -165,11 +164,12 @@ def main():
     print(f"🚀 Processing: {item['title']}")
     video_id = get_file_id_by_name(item['filename'])
     download_from_drive(video_id, 'raw_video.mp4')
+    
+    # यहाँ पर 5 मिनट वाला लिमिट हटा दिया गया है
     edit_anti_copyright_full_video('raw_video.mp4', 'edited_video.mp4')
 
     youtube = get_youtube_service()
 
-    # --- PERFECT METADATA FORMATTING ---
     disclaimer_text = (
         "⚠️ Copyright Disclaimer:\n"
         "Under section 107 of the Copyright Act 1976, allowance is made for 'fair use' "
@@ -182,7 +182,7 @@ def main():
         'snippet': {
             'title': item['title'],
             'description': formatted_description,
-            'tags': item.get('tags', []),  # असली टैग्स सिर्फ Tags बॉक्स में जाएंगे
+            'tags': item.get('tags', []),
             'categoryId': '24'
         },
         'status': {
@@ -198,7 +198,7 @@ def main():
         for attempt in range(4):
             try:
                 response = request.execute()
-                print(f"🎉 5 Min Video Uploaded! ID: {response['id']}")
+                print(f"🎉 Full Video Uploaded! ID: {response['id']}")
                 if 'thumbnail' in item: upload_thumbnail(youtube, response['id'], item['thumbnail'])
                 delete_from_drive(video_id)
                 
@@ -216,9 +216,9 @@ def main():
     except Exception as e:
         print(f"❌ Upload Failed: {e}")
 
-    for file in ['raw_video.mp4', 'edited_video.mp4', 'thumb.jpg', 'client_secret.json', 'token.json']:
+    for file in ['raw_video.mp4', 'edited_video.mp4', 'thumb.jpg', 'client_secret.json', 'token.json', 'service_account.json']:
         if os.path.exists(file): os.remove(file)
 
 if __name__ == '__main__':
     main()
-        
+    
