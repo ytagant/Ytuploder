@@ -3,9 +3,6 @@ import json
 import subprocess
 import time
 import re
-import urllib.parse
-import urllib.request
-from PIL import Image, ImageEnhance  # थंबनेल को बेहतर बनाने के लिए
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account
@@ -14,8 +11,6 @@ from googleapiclient.http import MediaFileUpload
 
 DRIVE_FOLDER_ID = os.environ.get('DRIVE_FOLDER_ID')
 SERVICE_ACCOUNT_JSON = os.environ.get('SERVICE_ACCOUNT_JSON')
-WHATSAPP_NUMBER = os.environ.get('WHATSAPP_NUMBER')
-WHATSAPP_API_KEY = os.environ.get('WHATSAPP_API_KEY')
 
 with open('service_account.json', 'w') as f:
     f.write(SERVICE_ACCOUNT_JSON)
@@ -24,36 +19,6 @@ creds_drive = service_account.Credentials.from_service_account_file(
     'service_account.json', scopes=['https://www.googleapis.com/auth/drive']
 )
 drive_service = build('drive', 'v3', credentials=creds_drive)
-
-def send_whatsapp_message(message):
-    if not WHATSAPP_NUMBER or not WHATSAPP_API_KEY:
-        print("⚠️ WhatsApp API Key या Number सेट नहीं है। मेसेज नहीं भेजा गया।")
-        return
-    try:
-        encoded_message = urllib.parse.quote(message)
-        url = f"https://api.callmebot.com/whatsapp.php?phone={WHATSAPP_NUMBER}&text={encoded_message}&apikey={WHATSAPP_API_KEY}"
-        urllib.request.urlopen(url)
-        print("📱 WhatsApp पर नोटिफिकेशन भेज दिया गया है!")
-    except Exception as e:
-        print(f"⚠️ WhatsApp मेसेज भेजने में एरर: {e}")
-
-def enhance_thumbnail(input_path, output_path):
-    print("🎨 थंबनेल की क्वालिटी (Brightness/Contrast) बढ़ाई जा रही है...")
-    try:
-        img = Image.open(input_path)
-        # ब्राइटनेस 15% बढ़ाना
-        enhancer = ImageEnhance.Brightness(img)
-        img = enhancer.enhance(1.15)
-        # कंट्रास्ट 20% बढ़ाना
-        enhancer = ImageEnhance.Contrast(img)
-        img = enhancer.enhance(1.20)
-        
-        img.save(output_path, quality=95)
-        print("✅ थंबनेल एन्हांसमेंट पूरा हुआ!")
-    except Exception as e:
-        print(f"⚠️ थंबनेल एडिट एरर: {e}")
-        # अगर कोई एरर आए, तो असली वाली फाइल ही यूज़ करें
-        os.rename(input_path, output_path)
 
 def download_from_drive(file_id, output_path):
     print(f"📥 Downloading file {output_path} from Drive...")
@@ -65,7 +30,7 @@ def download_from_drive(file_id, output_path):
             print("✅ Download Complete!")
             return
         except Exception as e:
-            print(f"⚠️ डाउनलोड नेटवर्क एरर (कोशिश {attempt+1}/4): {e}")
+            print(f"⚠️ डाउनलोड नेटवर्क एरर (प्रयास {attempt+1}/4): {e}")
             if attempt == 3: raise e
             time.sleep(10)
 
@@ -80,7 +45,7 @@ def delete_from_drive(file_id):
             time.sleep(10)
 
 def edit_anti_copyright_full_video(input_video, output_video):
-    print("🎬 FULL VIDEO PROCESSING: एडवांस्ड फिल्टर्स के साथ पूरी वीडियो की एडिटिंग जारी है...")
+    print("🎬 FULL VIDEO PROCESSING: एंटी-कॉपीराइट फिल्टर्स के साथ वीडियो प्रोसेसिंग जारी है...")
     video_filter = (
         "crop=iw-2:ih-2:1:1,scale=iw:ih,"
         "eq=brightness=0.01:contrast=1.04:saturation=1.08,"
@@ -100,6 +65,39 @@ def edit_anti_copyright_full_video(input_video, output_video):
     ]
     subprocess.run(cmd, check=True)
     print("✨ Full Video Anti-Copyright Editing Complete!")
+
+def enhance_and_upload_thumbnail(youtube, video_id, thumbnail_filename):
+    t_id = get_file_id_by_name(thumbnail_filename)
+    if not t_id: return
+    download_from_drive(t_id, 'raw_thumb.jpg')
+    
+    print("🎨 FFmpeg के ज़रिए थंबनेल को एंटी-कॉपीराइट एडिट किया जा रहा है...")
+    # FFmpeg से थंबनेल की ब्राइटनेस, कॉन्ट्रास्ट और शार्पनेस में बदलाव
+    thumb_filter = "eq=brightness=0.03:contrast=1.12:saturation=1.15,unsharp=3:3:0.8"
+    cmd = [
+        'ffmpeg', '-y',
+        '-i', 'raw_thumb.jpg',
+        '-vf', thumb_filter,
+        '-q:v', '2',
+        'edited_thumb.jpg'
+    ]
+    try:
+        subprocess.run(cmd, check=True)
+        print("✨ थंबनेल सफलतापूर्वक एडिट हो गया!")
+    except Exception as e:
+        print(f"⚠️ थंबनेल एडिट एरर, ओरिजिनल उपयोग हो रहा है: {e}")
+        os.rename('raw_thumb.jpg', 'edited_thumb.jpg')
+    
+    for attempt in range(4):
+        try:
+            media = MediaFileUpload('edited_thumb.jpg', mimetype='image/jpeg')
+            youtube.thumbnails().set(videoId=video_id, media_body=media).execute()
+            print("✅ एडिटेड थंबनेल यूट्यूब पर अपलोड हो गया!")
+            delete_from_drive(t_id)
+            return
+        except Exception as e:
+            if attempt == 3: return
+            time.sleep(10)
 
 def get_file_id_by_name(filename):
     query = f"name = '{filename}' and '{DRIVE_FOLDER_ID}' in parents and trashed = false"
@@ -135,25 +133,6 @@ def get_youtube_service():
             return build('youtube', 'v3', credentials=creds_yt)
         except Exception as e:
             if attempt == 3: raise e
-            time.sleep(10)
-
-def upload_thumbnail(youtube, video_id, thumbnail_filename):
-    t_id = get_file_id_by_name(thumbnail_filename)
-    if not t_id: return
-    download_from_drive(t_id, 'raw_thumb.jpg')
-    
-    # थंबनेल एन्हांसर कॉल करना
-    enhance_thumbnail('raw_thumb.jpg', 'thumb.jpg')
-    
-    for attempt in range(4):
-        try:
-            media = MediaFileUpload('thumb.jpg', mimetype='image/jpeg')
-            youtube.thumbnails().set(videoId=video_id, media_body=media).execute()
-            print("✅ थंबनेल अपलोड हो गया!")
-            delete_from_drive(t_id)
-            return
-        except Exception as e:
-            if attempt == 3: return
             time.sleep(10)
 
 def main():
@@ -201,6 +180,7 @@ def main():
 
     youtube = get_youtube_service()
 
+    # डिस्क्रिप्शन से लिंक्स हटाना और फेयर यूज़ डिस्क्लेमर लगाना
     original_desc = item.get('description', '')
     clean_desc = re.sub(r'http[s]?://\S+|www\.\S+', '', original_desc)
     clean_desc = re.sub(r'\n\s*\n', '\n\n', clean_desc).strip()
@@ -237,9 +217,9 @@ def main():
             try:
                 response = request.execute()
                 print(f"🎉 Full Video Uploaded! ID: {response['id']}")
-                video_url = f"https://youtu.be/{response['id']}"
                 
-                if 'thumbnail' in item: upload_thumbnail(youtube, response['id'], item['thumbnail'])
+                if 'thumbnail' in item: 
+                    enhance_and_upload_thumbnail(youtube, response['id'], item['thumbnail'])
                 delete_from_drive(video_id)
                 
                 if item['filename'] not in history: history.append(item['filename'])
@@ -248,11 +228,6 @@ def main():
                 mh = MediaFileUpload('processed_history.json')
                 if history_file_id: drive_service.files().update(fileId=history_file_id, media_body=mh).execute()
                 else: drive_service.files().create(body={'name':'processed_history.json','parents':[DRIVE_FOLDER_ID]}, media_body=mh).execute()
-                
-                # अपलोड के बाद WhatsApp पर मेसेज भेजना
-                msg = f"🎉 सफलता! आपकी वीडियो अपलोड हो गई है।\n\n📺 टाइटल: {item['title']}\n🔗 लिंक: {video_url}"
-                send_whatsapp_message(msg)
-                
                 break
             except Exception as e:
                 print(f"⚠️ अपलोड नेटवर्क एरर: {e}")
@@ -261,8 +236,9 @@ def main():
     except Exception as e:
         print(f"❌ Upload Failed: {e}")
 
-    for file in ['raw_video.mp4', 'edited_video.mp4', 'raw_thumb.jpg', 'thumb.jpg', 'client_secret.json', 'token.json', 'service_account.json']:
+    for file in ['raw_video.mp4', 'edited_video.mp4', 'raw_thumb.jpg', 'edited_thumb.jpg', 'client_secret.json', 'token.json', 'service_account.json']:
         if os.path.exists(file): os.remove(file)
 
 if __name__ == '__main__':
     main()
+            
