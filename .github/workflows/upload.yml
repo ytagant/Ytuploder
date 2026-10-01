@@ -1,9 +1,7 @@
 name: Automated Video Processor & YouTube Uploader
 
 on:
-  schedule:
-    - cron: '0 */4 * * *'
-  workflow_dispatch:
+  workflow_dispatch:       # اب صرف بیرونی الارم (cron-job.org) ہی اسے چلائے گا
 
 jobs:
   upload:
