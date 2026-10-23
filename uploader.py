@@ -221,10 +221,10 @@ def edit_anti_copyright_full_video(input_video, output_video):
     vf = build_pro_video_filter(W, H)
     af = build_pro_audio_filter()
     cmd = ['ffmpeg', '-y', '-v', 'error', '-i', input_video, '-vf', vf, '-af', af,
-           '-c:v', 'libx264', '-preset', 'medium', '-crf', '22', '-maxrate', '8M', '-bufsize', '16M',
+           '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-maxrate', '8M', '-bufsize', '16M',
            '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', output_video]
-    log_ts("pro edit: encoding (preset medium, crf 22)...")
-    subprocess.run(cmd, check=True, timeout=7200)
+    log_ts("pro edit: encoding (preset veryfast, crf 22)...")
+    subprocess.run(cmd, check=True, timeout=14400)
     log_ts("pro edit: encode done, running sync gate...")
     if not verify_av_sync(output_video):
         raise RuntimeError("A/V desync after pro edit - upload aborted")
@@ -586,6 +586,24 @@ def process_shorts_for_item(youtube, item, history, history_file_id):
                     try: os.remove(f)
                     except Exception: pass
 
+def save_queue_file(queue, queue_file_id):
+    with open('queue.json', 'w', encoding='utf-8') as f: json.dump(queue, f, indent=4)
+    for attempt in range(4):
+        try:
+            drive_service.files().update(fileId=queue_file_id, media_body=MediaFileUpload('queue.json')).execute()
+            return
+        except Exception:
+            if attempt == 3: raise
+            time.sleep(10)
+
+def requeue_failed_item(item, queue, queue_file_id):
+    """Queue integrity: a failed item goes back to the FRONT of queue.json (saved to Drive) so a failed run never silently eats an entry."""
+    if not item: return
+    if any(q.get('filename') == item.get('filename') for q in queue): return
+    queue.insert(0, item)
+    save_queue_file(queue, queue_file_id)
+    log_ts(f"queue integrity: '{item.get('filename')}' restored to FRONT of queue.json after failure - will be retried next run")
+
 def main():
     success_folder_id = get_or_create_success_folder()
     youtube = None
@@ -615,97 +633,96 @@ def main():
         else:
             item = queue.pop(0)
             break
-    with open('queue.json', 'w', encoding='utf-8') as f: json.dump(queue, f, indent=4)
-    for attempt in range(4):
-        try:
-            drive_service.files().update(fileId=queue_file_id, media_body=MediaFileUpload('queue.json')).execute()
-            break
-        except:
-            if attempt == 3: raise
-            time.sleep(10)
+    save_queue_file(queue, queue_file_id)
     if not item: return
-    video_id = get_file_id_by_name(item['filename'])
-    download_from_drive(video_id, 'raw_video.mp4')
-    edit_anti_copyright_full_video('raw_video.mp4', 'edited_video.mp4')
-    final_title = f"{item['title']} \u200B"
-    tags_list = item.get('tags', [])
-    if tags_list: random.shuffle(tags_list)
-    original_desc = item.get('description', '')
-    clean_desc = re.sub(r'http[s]?://\S+|www\.\S+', '', original_desc)
-    clean_desc = re.sub(r'\n\s*\n', '\n\n', clean_desc).strip()
-    formatted_description = f"{clean_desc}\n\nCopyright Disclaimer: Under section 107 of the Copyright Act 1976...".strip()
-    body = {'snippet': {'title': final_title, 'description': formatted_description, 'tags': tags_list, 'categoryId': '24'},
-            'status': {'privacyStatus': 'unlisted', 'selfDeclaredMadeForKids': False}}
-    upload_success = False
-    new_video_id = None
-    max_master_retries = 3
-    if youtube is None:
-        try:
-            youtube = get_youtube_service()
-        except Exception as e:
-            print(f"YouTube connection failed: {e}")
-            return
-    for master_attempt in range(max_master_retries):
-        if upload_success: break
-        asian_proxies = get_strict_asian_proxies()
-        if not asian_proxies: asian_proxies = ['direct']
-        for proxy in asian_proxies:
-            if upload_success: break
-            vid_id = check_if_video_uploaded(youtube, final_title)
-            if vid_id:
-                upload_success = True
-                break
-            if proxy != 'direct':
-                is_clean, info = verify_ip_cleanliness(proxy)
-                if not is_clean: continue
-                os.environ['http_proxy'] = f"http://{proxy}"
-                os.environ['https_proxy'] = f"http://{proxy}"
-            else:
-                os.environ.pop('http_proxy', None)
-                os.environ.pop('https_proxy', None)
+    try:
+        video_id = get_file_id_by_name(item['filename'])
+        download_from_drive(video_id, 'raw_video.mp4')
+        edit_anti_copyright_full_video('raw_video.mp4', 'edited_video.mp4')
+        final_title = f"{item['title']} \u200B"
+        tags_list = item.get('tags', [])
+        if tags_list: random.shuffle(tags_list)
+        original_desc = item.get('description', '')
+        clean_desc = re.sub(r'http[s]?://\S+|www\.\S+', '', original_desc)
+        clean_desc = re.sub(r'\n\s*\n', '\n\n', clean_desc).strip()
+        formatted_description = f"{clean_desc}\n\nCopyright Disclaimer: Under section 107 of the Copyright Act 1976...".strip()
+        body = {'snippet': {'title': final_title, 'description': formatted_description, 'tags': tags_list, 'categoryId': '24'},
+                'status': {'privacyStatus': 'unlisted', 'selfDeclaredMadeForKids': False}}
+        upload_success = False
+        new_video_id = None
+        max_master_retries = 3
+        if youtube is None:
             try:
-                media = MediaFileUpload('edited_video.mp4', chunksize=-1, resumable=True)
-                request = youtube.videos().insert(part=','.join(body.keys()), body=body, media_body=media)
-                try:
-                    response = request.execute()
-                    vid_id = response['id']
-                    new_video_id = response['id']
-                    upload_success = True
-                except Exception as e:
-                    time.sleep(300)
-                    temp_http = os.environ.pop('http_proxy', None)
-                    temp_https = os.environ.pop('https_proxy', None)
-                    vid_id = check_if_video_uploaded(youtube, final_title)
-                    if temp_http: os.environ['http_proxy'] = temp_http
-                    if temp_https: os.environ['https_proxy'] = temp_https
-                    if vid_id:
-                        new_video_id = vid_id
-                        upload_success = True
-                if upload_success:
-                    if 'thumbnail' in item: enhance_and_upload_thumbnail(youtube, vid_id, item['thumbnail'], success_folder_id)
-                    if success_folder_id: move_file_to_success_folder(video_id, success_folder_id)
-                    if item['filename'] not in history: history.append(item['filename'])
-                    persist_history(history, history_file_id)
-                    if new_video_id:
-                        try: add_pending_review_entry(new_video_id)
-                        except Exception as e: log_ts(f"could not queue {new_video_id} for review: {e}")
-                    try:
-                        process_shorts_for_item(youtube, item, history, history_file_id)
-                    except Exception as e:
-                        log_ts(f"shorts pipeline failed: {e}")
-                    break
+                youtube = get_youtube_service()
             except Exception as e:
-                pass
+                print(f"YouTube connection failed: {e}")
+                raise RuntimeError(f"YouTube connection failed: {e}")
+        for master_attempt in range(max_master_retries):
+            if upload_success: break
+            asian_proxies = get_strict_asian_proxies()
+            if not asian_proxies: asian_proxies = ['direct']
+            for proxy in asian_proxies:
+                if upload_success: break
+                vid_id = check_if_video_uploaded(youtube, final_title)
+                if vid_id:
+                    upload_success = True
+                    break
+                if proxy != 'direct':
+                    is_clean, info = verify_ip_cleanliness(proxy)
+                    if not is_clean: continue
+                    os.environ['http_proxy'] = f"http://{proxy}"
+                    os.environ['https_proxy'] = f"http://{proxy}"
+                else:
+                    os.environ.pop('http_proxy', None)
+                    os.environ.pop('https_proxy', None)
+                try:
+                    media = MediaFileUpload('edited_video.mp4', chunksize=-1, resumable=True)
+                    request = youtube.videos().insert(part=','.join(body.keys()), body=body, media_body=media)
+                    try:
+                        response = request.execute()
+                        vid_id = response['id']
+                        new_video_id = response['id']
+                        upload_success = True
+                    except Exception as e:
+                        time.sleep(300)
+                        temp_http = os.environ.pop('http_proxy', None)
+                        temp_https = os.environ.pop('https_proxy', None)
+                        vid_id = check_if_video_uploaded(youtube, final_title)
+                        if temp_http: os.environ['http_proxy'] = temp_http
+                        if temp_https: os.environ['https_proxy'] = temp_https
+                        if vid_id:
+                            new_video_id = vid_id
+                            upload_success = True
+                    if upload_success:
+                        if 'thumbnail' in item: enhance_and_upload_thumbnail(youtube, vid_id, item['thumbnail'], success_folder_id)
+                        if success_folder_id: move_file_to_success_folder(video_id, success_folder_id)
+                        if item['filename'] not in history: history.append(item['filename'])
+                        persist_history(history, history_file_id)
+                        if new_video_id:
+                            try: add_pending_review_entry(new_video_id)
+                            except Exception as e: log_ts(f"could not queue {new_video_id} for review: {e}")
+                        try:
+                            process_shorts_for_item(youtube, item, history, history_file_id)
+                        except Exception as e:
+                            log_ts(f"shorts pipeline failed: {e}")
+                        break
+                except Exception as e:
+                    pass
+            if not upload_success:
+                time.sleep(15)
         if not upload_success:
-            time.sleep(15)
-    if not upload_success:
-        if item['filename'] not in history:
-            history.append(item['filename'])
-            persist_history(history, history_file_id)
-    os.environ.pop('http_proxy', None)
-    os.environ.pop('https_proxy', None)
-    for file in ['raw_video.mp4', 'edited_video.mp4', 'raw_thumb.jpg', 'edited_thumb.jpg', 'client_secret.json', 'token.json', 'service_account.json', PENDING_FILE]:
-        if os.path.exists(file): os.remove(file)
+            raise RuntimeError(f"upload failed after all retries for '{item['filename']}' - item will be re-queued")
+        os.environ.pop('http_proxy', None)
+        os.environ.pop('https_proxy', None)
+        for file in ['raw_video.mp4', 'edited_video.mp4', 'raw_thumb.jpg', 'edited_thumb.jpg', 'client_secret.json', 'token.json', 'service_account.json', PENDING_FILE]:
+            if os.path.exists(file): os.remove(file)
+    except Exception as e:
+        log_ts(f"processing/upload FAILED for '{item.get('filename')}': {e}")
+        try:
+            requeue_failed_item(item, queue, queue_file_id)
+        except Exception as re_e:
+            log_ts(f"queue integrity: re-queue FAILED for '{item.get('filename')}': {re_e}")
+        raise
 
 if __name__ == '__main__':
     main()
